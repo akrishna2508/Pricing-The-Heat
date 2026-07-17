@@ -1,0 +1,11 @@
+.env
+__pycache__/
+node_modules/
+*.pt
+*.pth
+*.pkl
+data/raw/*
+!data/raw/*.meta.json
+data/processed/*
+models/artifacts/*
+.pytest_cache/
