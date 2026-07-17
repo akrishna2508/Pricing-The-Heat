@@ -1,0 +1,74 @@
+# City configuration for the Pricing the Heat pipeline.
+#
+# bbox: real NASA POWER regional-API bounding box. POWER's regional endpoint
+# requires >= 2 degree spans in both latitude and longitude (verified against
+# the live API 2026-07-17); a single city center is therefore widened to a
+# ~2deg x 2deg metro bbox to yield multiple real grid cells (node count is
+# data-driven downstream, never hardcoded).
+#
+# occupations.*.baseline_daily_wage_inr: cited from the Minimum Wages Act,
+# 1948 notification issued by the Labour & Employment Department, Government
+# of Gujarat (Zone I / Ahmedabad Municipal Corporation area rates). This is a
+# manually-curated CITED constant, not an API-fetched value (World Bank
+# Indicators give labor-structure shares, not currency wage levels -- see
+# backend/data/wages.py). needs_verification flags that the exact rupee
+# figure should be reconciled against the latest live GR notification before
+# any external presentation of results.
+
+default_city: ahmedabad
+
+cities:
+  ahmedabad:
+    name: Ahmedabad
+    country_iso3: IND
+    context: >
+      Ahmedabad, Gujarat -- site of South Asia's first Heat Action Plan
+      (Ahmedabad Heat Action Plan, launched 2013 by Ahmedabad Municipal
+      Corporation with NRDC and IIPH-Gandhinagar), making it a strong,
+      real-world anchor city for a heatwave wage-loss pricing model.
+    bbox:
+      lat_min: 22.0
+      lat_max: 24.0
+      lon_min: 71.5
+      lon_max: 73.5
+    occupations:
+      vendor:
+        baseline_daily_wage_inr: 368.0
+        source_name: >
+          Minimum Wages Act, 1948 notification (unskilled, Zone I) --
+          Labour & Employment Department, Government of Gujarat
+        source_url: "https://labour.gujarat.gov.in"
+        source_date: "2023-10-01"
+        needs_verification: true
+        verification_note: >
+          Figure reflects the general unskilled-worker Zone I rate range
+          cited in Gujarat minimum-wage notifications; reconcile against the
+          current live Government Resolution (GR) before external use.
+      construction:
+        baseline_daily_wage_inr: 406.0
+        source_name: >
+          Minimum Wages Act, 1948 notification (Building & Construction
+          scheduled employment, semi-skilled) -- Labour & Employment
+          Department, Government of Gujarat
+        source_url: "https://labour.gujarat.gov.in"
+        source_date: "2023-10-01"
+        needs_verification: true
+        verification_note: >
+          Figure reflects the general semi-skilled construction-sector rate
+          range cited in Gujarat minimum-wage notifications; reconcile
+          against the current live Government Resolution (GR) before
+          external use.
+      delivery:
+        baseline_daily_wage_inr: 387.0
+        source_name: >
+          Minimum Wages Act, 1948 notification (semi-skilled, Zone I) --
+          Labour & Employment Department, Government of Gujarat
+        source_url: "https://labour.gujarat.gov.in"
+        source_date: "2023-10-01"
+        needs_verification: true
+        verification_note: >
+          Figure reflects the general semi-skilled Zone I rate range cited
+          in Gujarat minimum-wage notifications (proxy for gig/delivery
+          work, which is not yet its own scheduled employment category);
+          reconcile against the current live Government Resolution (GR)
+          before external use.

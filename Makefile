@@ -14,10 +14,10 @@ help:
 	@echo "  make clean      - Remove build artifacts and cache"
 
 install:
-	pip install -r backend/requirements.txt --index-url https://download.pytorch.org/whl/cpu
+	pip install -r backend/requirements.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 
 data:
-	@echo "TODO: Implement data fetching and processing"
+	PYTHONPATH=. python -m backend.data.build_wage_loss
 
 train:
 	@echo "TODO: Implement model training pipeline"
@@ -26,10 +26,10 @@ backtest:
 	@echo "TODO: Implement backtesting pipeline"
 
 reproduce:
-	@echo "TODO: Regenerate artifacts from cached responses"
+	PYTHONPATH=. python -m backend.data.build_wage_loss
 
 test:
-	pytest tests/unit -q
+	PYTHONPATH=. pytest tests/unit -q
 	@echo "TODO: Implement e2e tests"
 
 up:

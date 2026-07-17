@@ -1,6 +1,8 @@
 .env
 __pycache__/
 node_modules/
+.venv/
+.hypothesis/
 *.pt
 *.pth
 *.pkl
