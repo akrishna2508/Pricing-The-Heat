@@ -24,6 +24,8 @@ train:
 	PYTHONPATH=. python -m models.stgcn.train
 	PYTHONPATH=. python -m models.behavioral_agent.ppo_from_scratch
 	PYTHONPATH=. python -m models.behavioral_agent.calibration
+	PYTHONPATH=. python -m models.stgcn.evaluate_spatial
+	PYTHONPATH=. python -m models.fusion.tevi
 
 backtest:
 	@echo "TODO: Implement backtesting pipeline"
@@ -36,6 +38,8 @@ reproduce:
 	PYTHONPATH=. python -m models.stgcn.train
 	PYTHONPATH=. python -m models.behavioral_agent.ppo_from_scratch
 	PYTHONPATH=. python -m models.behavioral_agent.calibration
+	PYTHONPATH=. python -m models.stgcn.evaluate_spatial
+	PYTHONPATH=. python -m models.fusion.tevi
 
 test:
 	PYTHONPATH=. pytest tests/unit -q

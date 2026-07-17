@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 METRICS_PATH = Path("notebooks/artifacts/spatial_baseline_metrics.json")
+COPULA_PATH = Path("models/artifacts/copula.json")
 
 
 def heat_model_section(metrics_path: Path = METRICS_PATH) -> str:
@@ -64,8 +65,55 @@ def heat_model_section(metrics_path: Path = METRICS_PATH) -> str:
     return "\n".join(lines)
 
 
+def fusion_section(copula_path: Path = COPULA_PATH) -> str:
+    """The mu-TEVI fusion claim, with its caveats attached rather than dropped.
+
+    Reads models/artifacts/copula.json (written by models.fusion.tevi) as the
+    single source of truth, so the report cannot drift from the fit.
+    """
+    if not copula_path.exists():
+        raise FileNotFoundError(
+            f"{copula_path} does not exist. Run `python -m models.fusion.tevi` first.")
+    d = json.loads(copula_path.read_text())
+    hurdle = d["hurdle"]
+    atten = d["atom_attenuation"]
+    bites = d["where_the_smearing_bites"]
+
+    return "\n".join([
+        "mu-TEVI fusion (Gumbel copula over heat trigger x wage loss)",
+        f"  What the copula models: {d['pairing']['models']}.",
+        f"    trigger = {d['pairing']['trigger']}",
+        f"    loss    = {d['pairing']['loss']}",
+        f"    NOT the node's own heat: {d['pairing']['why_not_own_node_heat']}",
+        f"  theta = {d['theta']:.4f} (tie convention: {d['tie_handling']}), "
+        f"lambda_U = {d['upper_tail_dependence']:.4f}",
+        f"  F_L hurdle: p0 = {hurdle['p0']:.4f} ({hurdle['n_zero_atom']} node-days at exactly "
+        f"zero), positive part = {hurdle['positive_dist']} (by AIC)",
+        f"  F_H: GEV, but KS={d['gev_fit_quality']['ks']:.4f} vs 5% critical "
+        f"{d['gev_fit_quality']['ks_critical_5pct']:.4f} -> "
+        f"{'REJECTED' if d['gev_fit_quality']['ks_rejects_at_5pct'] else 'not rejected'}. "
+        f"{d['gev_fit_quality']['caveat']}",
+        f"  HONEST CAVEAT (theta delta): the raw naive-vs-hurdle delta "
+        f"({d['theta_naive_vs_hurdle_delta']:+.4f}) is mostly the atom-induced attenuation "
+        f"(factor {atten['factor']:.4f}), not the smearing. Net of it the smearing moves theta "
+        f"by only {atten['theta_naive_vs_hurdle_delta_attenuation_adjusted']:+.4f}.",
+        f"  WHERE THE SMEARING ACTUALLY COSTS: the marginal. P(zero-loss day) = "
+        f"{bites['p_zero_loss_hurdle']:.4f} under the hurdle vs {bites['p_zero_loss_naive']:.4f} "
+        f"under Prompt 3's single-piece fit -- that drives payout probability on a third of the "
+        f"calendar.",
+        f"  SPATIAL HONESTY: {d['spatial_honesty']}",
+        f"  tau convention: kappa/gamma are conditional on tau = {d['tau_convention']}; "
+        f"they are not free-standing constants.",
+    ])
+
+
 def main() -> int:
     print(heat_model_section())
+    print()
+    try:
+        print(fusion_section())
+    except FileNotFoundError as exc:
+        print(f"mu-TEVI fusion section unavailable: {exc}")
     return 0
 
 
