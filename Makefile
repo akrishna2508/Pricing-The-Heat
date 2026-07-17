@@ -21,13 +21,14 @@ data:
 	PYTHONPATH=. python -m backend.data.build_wage_loss
 
 train:
-	@echo "TODO: Implement model training pipeline"
+	PYTHONPATH=. python -m models.stgcn.train
 
 backtest:
 	@echo "TODO: Implement backtesting pipeline"
 
 reproduce:
 	PYTHONPATH=. python -m backend.data.build_wage_loss
+	PYTHONPATH=. python -m models.stgcn.train
 
 test:
 	PYTHONPATH=. pytest tests/unit -q
