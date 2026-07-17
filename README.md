@@ -48,14 +48,29 @@ drop the CSV in manually -- this is a manual drop-in, not an automated fetch.
 
 `cities.yaml` cites the Gujarat Minimum Wages Act, 1948 notification
 (Labour & Employment Department, Government of Gujarat) for Ahmedabad's
-per-occupation baseline daily wages. These entries are flagged
-`needs_verification: true` and should be reconciled against the current live
-Government Resolution before any external presentation of results.
+per-occupation baseline daily wages. Each `baseline_daily_wage` record carries
+`source_name`, `source_url`, `effective_date`, and a `verified: false` flag.
+Run `python -m backend.data.verify_wages` to print exactly what needs
+checking against the live Government Resolution. Only a human can flip
+`verified: true` (after confirming the figure) -- the agent never sets it
+itself, since it cannot confirm a live government notification.
+
+### Location-based pricing
+
+`backend/data/location.py` resolves a real GPS coordinate to the nearest
+configured city (haversine distance, `THRESHOLD_KM = 150`). A hit within
+range prices using that city's real NASA POWER grid and cited wage schedule;
+a miss returns an honest `out_of_coverage` response naming the nearest
+configured city and its distance -- never fabricated data for the raw point.
+Coordinates travel only in POST bodies (`/resolve-location`,
+`/simulate-policy`) and are never logged, cached, or persisted.
 
 ## Tests
 
 `tests/unit/test_data.py` runs fully offline against committed fixtures in
 `tests/fixtures/` (recorded once, with network, via `tests/fixtures/_record.py`).
+`tests/unit/test_location.py` and `tests/unit/test_api.py` cover city
+resolution and the `/resolve-location` + `/simulate-policy` endpoints.
 
 ```
 PYTHONPATH=. pytest tests/unit -q

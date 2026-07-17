@@ -107,14 +107,17 @@ class WageLoader:
         wages: dict[str, float] = {}
         provenance: list[dict] = []
         for occupation, info in city["occupations"].items():
-            wages[occupation] = float(info["baseline_daily_wage_inr"])
+            wage = info["baseline_daily_wage"]
+            wages[occupation] = float(wage["value"])
             provenance.append({
                 "city": key,
                 "occupation": occupation,
-                "baseline_daily_wage_inr": info["baseline_daily_wage_inr"],
-                "source_name": info["source_name"],
-                "source_url": info["source_url"],
-                "source_date": info["source_date"],
-                "needs_verification": info.get("needs_verification", False),
+                "value": wage["value"],
+                "currency": wage.get("currency", "INR"),
+                "source_name": wage["source_name"],
+                "source_url": wage["source_url"],
+                "effective_date": wage["effective_date"],
+                "verified": wage.get("verified", False),
+                "verification_note": wage.get("verification_note", ""),
             })
         return wages, provenance

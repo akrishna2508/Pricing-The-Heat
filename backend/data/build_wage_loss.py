@@ -100,11 +100,12 @@ def build(city_key: str | None = None, start: str = "20140101", end: str = "2023
           f"days={filled_weather['date'].nunique()} bbox={city['bbox']}")
     print(f"[REAL API] Wages (labor structure only): World Bank Indicators v2 "
           f"({WORLD_BANK_HOST}), indicator={WORLDBANK_INDICATOR}")
-    print("[CITED]    Baseline daily wages (INR):")
+    print("[CITED]    Baseline daily wages:")
     for rec in wage_provenance:
-        flag = " [NEEDS VERIFICATION]" if rec["needs_verification"] else ""
-        print(f"           {rec['occupation']}: INR {rec['baseline_daily_wage_inr']} "
-              f"-- {rec['source_name'].strip()} ({rec['source_url']}, {rec['source_date']}){flag}")
+        verified_tag = "verified:true" if rec["verified"] else "verified:false [UNCONFIRMED]"
+        print(f"           {rec['occupation']}: {rec['currency']} {rec['value']} "
+              f"-- {rec['source_name'].strip()} ({rec['source_url']}, {rec['effective_date']}) "
+              f"[{verified_tag}]")
     print("[CITED]    Elasticity:")
     for rec in elasticity.provenance():
         for occ in rec["occupations"]:

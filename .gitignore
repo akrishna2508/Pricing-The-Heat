@@ -3,6 +3,8 @@ __pycache__/
 node_modules/
 .venv/
 .hypothesis/
+frontend/.next/
+frontend/next-env.d.ts
 *.pt
 *.pth
 *.pkl

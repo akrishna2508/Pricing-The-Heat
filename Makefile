@@ -14,7 +14,8 @@ help:
 	@echo "  make clean      - Remove build artifacts and cache"
 
 install:
-	pip install -r backend/requirements.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+	pip install -r backend/requirements-torch.txt
+	pip install -r backend/requirements.txt
 
 data:
 	PYTHONPATH=. python -m backend.data.build_wage_loss
