@@ -214,6 +214,25 @@ class HurdleMarginal:
             "positive_aic": {k: v["aic"] for k, v in self.positive_aic.items()},
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> HurdleMarginal:
+        """Reconstruct from a to_dict() payload (e.g. copula.json's 'hurdle' block).
+
+        This is the ONLY sanctioned way for the pricer to rebuild F_L from
+        copula.json -- it guarantees the exact fitted p0/dist/params are used,
+        so the Prompt-5 sampler cannot silently drift from the Prompt-4 fit.
+        """
+        if d["positive_dist"] not in POSITIVE_CANDIDATES:
+            raise ValueError(f"unknown positive_dist {d['positive_dist']!r}")
+        return cls(
+            p0=float(d["p0"]),
+            positive_dist=d["positive_dist"],
+            positive_params=tuple(float(p) for p in d["positive_params"]),
+            n_zero=int(d.get("n_zero_atom", 0)),
+            n_positive=int(d.get("n_positive", 0)),
+            positive_aic={},
+        )
+
 
 @dataclass
 class NaiveMarginal:
