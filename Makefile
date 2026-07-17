@@ -22,13 +22,20 @@ data:
 
 train:
 	PYTHONPATH=. python -m models.stgcn.train
+	PYTHONPATH=. python -m models.behavioral_agent.ppo_from_scratch
+	PYTHONPATH=. python -m models.behavioral_agent.calibration
 
 backtest:
 	@echo "TODO: Implement backtesting pipeline"
 
+# Order matters: build_wage_loss writes the literature-based wage_loss.parquet,
+# then calibration.py overwrites it with the behaviorally-calibrated version
+# (same schema) that Prompt 4 consumes as F_L.
 reproduce:
 	PYTHONPATH=. python -m backend.data.build_wage_loss
 	PYTHONPATH=. python -m models.stgcn.train
+	PYTHONPATH=. python -m models.behavioral_agent.ppo_from_scratch
+	PYTHONPATH=. python -m models.behavioral_agent.calibration
 
 test:
 	PYTHONPATH=. pytest tests/unit -q
