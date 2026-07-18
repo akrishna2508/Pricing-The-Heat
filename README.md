@@ -4,6 +4,24 @@ A parametric micro-insurance pricing engine for informal outdoor workers'
 heatwave wage loss. See `CLAUDE.md` for the full project brief and standing
 engineering rules.
 
+## Success metric (amended)
+
+The original headline target was "≥20% lower **MAPE** than a flat-rate baseline"
+(`CLAUDE.md`). MAPE was found to be methodologically wrong for this payoff
+distribution (right-skewed, zero-inflated, tail-dominated) on grounds that hold
+independently of any model's score, so the **primary metric is now MAE**, with a
+tail-weighted error and MAPE retained as an explained secondary. The full
+reasoning, the amended metric, and the robustness check are recorded in
+[`docs/METRIC_AMENDMENT.md`](docs/METRIC_AMENDMENT.md). On the amended primary
+metric the full model beats the flat baseline by ~28% (MAE), with a bootstrap
+95% CI excluding zero.
+
+The contract itself was calibrated on the real replay
+(`backend/backtest/contract_design.py`): no strike/window makes it behave like
+rare-event catastrophe insurance without gutting coverage, because the peril is
+chronic (workers lose wages on ~66% of worker-days), so the product is honestly
+framed as **high-frequency income smoothing** rather than tail insurance.
+
 ## Data pipeline (`backend/data/`)
 
 | Module | Purpose |

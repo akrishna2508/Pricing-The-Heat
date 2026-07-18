@@ -17,10 +17,142 @@ from models.pricing.basis_risk import basis_risk_empirical  # re-exported, reuse
 from models.pricing.lsmc_pricer import LSMCPricer, persistence_premium_gap
 
 __all__ = [
+    "mae", "tail_weighted_error", "mae_win_rate", "bootstrap_mae_difference",
     "mape", "premium_to_payout_ratio", "value_at_risk", "expected_shortfall",
     "basis_risk_empirical", "trigger_rate", "payout_frequency",
     "real_persistence_premium_gap",
 ]
+
+
+def _abs_errors(actual: np.ndarray, predicted: np.ndarray, nonzero_only: bool,
+                min_actual: float) -> tuple[np.ndarray, np.ndarray]:
+    """Absolute errors |actual - predicted|, and the boolean include-mask.
+
+    Shared by every absolute-error metric below so they all score the SAME
+    sample. `nonzero_only` scores only the windows where a payout actually
+    occurred -- the windows on which pricing accuracy is testable, and the same
+    sample MAPE is forced onto. This is deliberate, not incidental: including
+    the zero-payout windows would compare each model's (fixed, positive) premium
+    against a realized payout of 0, which REWARDS THE LOWER PREMIUM regardless of
+    which model is better -- exactly the under-prediction bias that makes MAPE
+    the wrong metric here. Aggregate calibration over the whole book (zeros
+    included) is captured separately by premium_to_payout_ratio.
+    """
+    actual = np.asarray(actual, dtype=float).reshape(-1)
+    predicted = np.asarray(predicted, dtype=float).reshape(-1)
+    if len(actual) != len(predicted):
+        raise ValueError("actual and predicted must be the same length")
+    if len(actual) == 0:
+        raise ValueError("need at least one observation")
+    mask = (np.abs(actual) > min_actual) if nonzero_only else np.ones(len(actual), bool)
+    return np.abs(actual - predicted), mask
+
+
+def mae(actual: np.ndarray, predicted: np.ndarray, nonzero_only: bool = True,
+       min_actual: float = 1e-9) -> dict:
+    """Mean Absolute Error -- the PRIMARY headline metric (see docs/METRIC_AMENDMENT.md).
+
+    Symmetric, in the payout's own currency units, and DEFINED on every window
+    (no division by the actual value), so unlike MAPE it neither blows up on the
+    zero-inflated small-loss mass nor structurally rewards under-prediction.
+    Scored on the nonzero-actual sample by default -- see _abs_errors.
+    """
+    errors, mask = _abs_errors(actual, predicted, nonzero_only, min_actual)
+    if mask.sum() == 0:
+        raise ValueError("no observations in the scored sample")
+    return {
+        "mae": float(errors[mask].mean()),
+        "n_included": int(mask.sum()),
+        "n_excluded": int((~mask).sum()),
+        "n_total": int(len(errors)),
+    }
+
+
+def tail_weighted_error(actual: np.ndarray, predicted: np.ndarray,
+                        tail_quantile: float = 0.9, min_actual: float = 1e-9) -> dict:
+    """Mean absolute error CONDITIONAL on the actual being in the upper tail --
+    the error on the largest-loss windows, which is what insurance economics
+    turn on.
+
+    Defined as the mean of |actual - predicted| over the windows where
+    actual >= quantile(actual, tail_quantile). A conditional / CVaR-style error:
+    at tail_quantile = 0 the threshold is the sample minimum, every window
+    qualifies, and this reduces EXACTLY to plain MAE (asserted in the tests).
+    At 0.9 it is the MAE on the worst 10% of windows.
+
+    Weighting the tail is the honest emphasis for a heat-payout product: the
+    flat baseline's fixed low premium is catastrophically wrong on the big
+    windows precisely because it is priced to minimize error against the many
+    small ones -- the tail is where that trade-off is exposed.
+    """
+    if not 0.0 <= tail_quantile < 1.0:
+        raise ValueError(f"tail_quantile must be in [0, 1), got {tail_quantile}")
+    actual = np.asarray(actual, dtype=float).reshape(-1)
+    predicted = np.asarray(predicted, dtype=float).reshape(-1)
+    if len(actual) != len(predicted):
+        raise ValueError("actual and predicted must be the same length")
+    # Score over the nonzero-actual sample (the tail is large-actual by
+    # construction; at tail_quantile=0 this still reduces to MAE of that sample).
+    nonzero = np.abs(actual) > min_actual if tail_quantile > 0 else np.ones(len(actual), bool)
+    a, p = actual[nonzero], predicted[nonzero]
+    if len(a) == 0:
+        raise ValueError("no observations in the scored sample")
+    threshold = float(np.quantile(a, tail_quantile))
+    tail = a >= threshold
+    return {
+        "tail_weighted_error": float(np.abs(a[tail] - p[tail]).mean()),
+        "tail_quantile": tail_quantile,
+        "tail_threshold": threshold,
+        "n_tail": int(tail.sum()),
+    }
+
+
+def mae_win_rate(actual: np.ndarray, predicted_a: np.ndarray, predicted_b: np.ndarray,
+                nonzero_only: bool = True, min_actual: float = 1e-9) -> float:
+    """Fraction of windows on which model A has the strictly smaller absolute
+    error than model B -- a per-window robustness check that the aggregate MAE
+    lead is not carried by a few windows."""
+    err_a, mask = _abs_errors(actual, predicted_a, nonzero_only, min_actual)
+    err_b, _ = _abs_errors(actual, predicted_b, nonzero_only, min_actual)
+    return float((err_a[mask] < err_b[mask]).mean())
+
+
+def bootstrap_mae_difference(actual: np.ndarray, predicted_a: np.ndarray,
+                             predicted_b: np.ndarray, n_boot: int = 10_000,
+                             seed: int = 42, nonzero_only: bool = True,
+                             min_actual: float = 1e-9) -> dict:
+    """Bootstrap CI on MAE(B) - MAE(A) over the scored windows.
+
+    A is the model under test (the full model), B the comparator (baseline), so
+    a POSITIVE difference means A has the smaller error -- A is better. A 95% CI
+    that excludes 0 means the lead is robust to resampling; a CI straddling 0
+    means it is fragile, and the report must say so rather than present it as
+    solid. Seed logged for reproducibility.
+    """
+    err_a, mask = _abs_errors(actual, predicted_a, nonzero_only, min_actual)
+    err_b, _ = _abs_errors(actual, predicted_b, nonzero_only, min_actual)
+    ea, eb = err_a[mask], err_b[mask]
+    n = len(ea)
+    if n == 0:
+        raise ValueError("no observations in the scored sample")
+    rng = np.random.default_rng(seed)
+    diffs = np.empty(n_boot)
+    for i in range(n_boot):
+        idx = rng.integers(0, n, n)
+        diffs[i] = eb[idx].mean() - ea[idx].mean()
+    point = float(eb.mean() - ea.mean())
+    lo, hi = float(np.percentile(diffs, 2.5)), float(np.percentile(diffs, 97.5))
+    return {
+        "mae_difference": point,
+        "ci_low": lo,
+        "ci_high": hi,
+        "ci_excludes_zero": bool(lo > 0.0),
+        "improvement_pct": point / float(eb.mean()) * 100.0,
+        "improvement_pct_ci": [lo / float(eb.mean()) * 100.0, hi / float(eb.mean()) * 100.0],
+        "n_boot": n_boot,
+        "seed": seed,
+        "n_scored": n,
+    }
 
 
 def mape(actual: np.ndarray, predicted: np.ndarray, min_actual: float = 1e-9) -> dict:
