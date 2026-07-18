@@ -1,5 +1,6 @@
 """FastAPI backend exposing the pipeline as a service (Prompt 7; /forecast and
-/flag-anomaly wired to real models in Prompt 8).
+/flag-anomaly wired to real models in Prompt 8; /assistant/ask wired to a
+grounded Claude assistant in Prompt 9).
 
 PRODUCT FRAMING (carried from Prompt 6b, non-negotiable everywhere in this
 module): the peril is chronic -- outdoor workers lose wages on ~66% of
@@ -36,6 +37,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from backend.assistant import service as assistant_service
 from backend.config import load_contract_config
 from backend.data.location import resolve_city
 from backend.data.wages import WageLoader
@@ -265,6 +267,12 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
         "strike": pricer.strike,
         "cap": pricer.cap,
         "city_key": resolved["city_key"],
+        # Cached verbatim so /assistant/ask's get_policy_state tool (Prompt 9)
+        # is grounded on the SAME values this response returned, not a re-run.
+        "premium_lsmc": result["premium_lsmc"],
+        "premium_wang": result["premium_wang"],
+        "payout_schedule": result["payout_schedule"],
+        "basis_risk": result["basis_risk"],
     }
 
     return SimulatePolicyResponse(
@@ -583,14 +591,28 @@ def flag_anomaly(req: FlagAnomalyRequest):
     return FlagAnomalyResponse(is_anomalous=is_anomalous, anomaly_score=anomaly_score)
 
 
-# --- /assistant/ask (Prompt 9, lazy) ----------------------------------------
+# --- /assistant/ask (Prompt 9) -----------------------------------------------
 
 
 class AssistantAskRequest(BaseModel):
+    policy_id: str
     question: str
 
 
-@app.post("/assistant/ask")
+class AssistantAskResponse(BaseModel):
+    policy_id: str
+    answer: str
+    source: str
+
+
+@app.post("/assistant/ask", response_model=AssistantAskResponse)
 @limiter.limit("30/minute")
 def assistant_ask(req: AssistantAskRequest, request: Request):
-    raise HTTPException(status_code=503, detail="assistant endpoint not yet implemented (Prompt 9)")
+    """Grounded Claude policy assistant: get_policy_state (backend.assistant.tools)
+    is the model's ONLY source of numeric facts about a policy -- see
+    backend.assistant.service for the tool-use loop and the no-key /
+    on-error deterministic fallback that keeps this route from ever 500ing.
+    """
+    result = assistant_service.ask(req.policy_id, req.question, _policy_cache)
+    return AssistantAskResponse(policy_id=req.policy_id, answer=result["answer"],
+                                source=result["source"])

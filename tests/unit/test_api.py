@@ -165,6 +165,9 @@ def test_forecast_without_trained_model_returns_503(monkeypatch):
     assert resp.status_code == 503
 
 
-def test_assistant_ask_returns_503_stub():
+def test_assistant_ask_requires_policy_id():
+    # /assistant/ask is now a real grounded assistant (Prompt 9, see
+    # tests/unit/test_assistant.py for full coverage); policy_id is a
+    # required body field, so omitting it is a malformed-body 422, not a 503.
     resp = client.post("/assistant/ask", json={"question": "will it be hot next week?"})
-    assert resp.status_code == 503
+    assert resp.status_code == 422
