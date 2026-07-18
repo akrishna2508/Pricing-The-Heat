@@ -16,8 +16,11 @@ help:
 install:
 	pip install -r backend/requirements-torch.txt
 	pip install -r backend/requirements.txt
+	cd frontend && npm ci
 
 data:
+	PYTHONPATH=. python -m backend.data.fetch_weather
+	PYTHONPATH=. python -m backend.data.fetch_wages
 	PYTHONPATH=. python -m backend.data.build_wage_loss
 
 train:
