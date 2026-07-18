@@ -19,6 +19,27 @@
 
 default_city: ahmedabad
 
+# CHOSEN CONTRACT (Prompt 6b), the single source of truth both the backtest
+# (backend/backtest/historical_replay.py, via models/pricing/lsmc_pricer.py's
+# DEFAULT_STRIKE/DEFAULT_HORIZON) and the API (backend/main.py) read -- never
+# hardcode strike/window separately in either place, or the two can silently
+# drift apart.
+#
+# Selected on the real historical replay by backend/backtest/contract_design.py's
+# strike/window sweep (see notebooks/artifacts/backtest_report.md, "Contract
+# Design" section, and notebooks/artifacts/contract_design_sweep.csv for the
+# full grid). The honesty gate found 0 of 36 grid points behave like
+# catastrophe insurance -- outdoor workers lose wages on ~66% of worker-days, a
+# chronic/high-frequency peril, not a rare catastrophe -- so the product is
+# honestly framed as high-frequency INCOME SMOOTHING (never "catastrophe
+# insurance" in any user-facing string). strike=75 minimizes the index bias
+# (|shortfall_rate - overpay_rate|, an unbiased index); window=14 then
+# maximizes genuine risk transfer (lowest premium/cap) among ties.
+contract:
+  strike: 75
+  window_days: 14
+  product_type: income_smoothing
+
 cities:
   ahmedabad:
     name: Ahmedabad

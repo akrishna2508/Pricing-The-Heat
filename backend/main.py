@@ -1,14 +1,50 @@
-from pathlib import Path
+"""FastAPI backend exposing the pipeline as a service (Prompt 7).
 
+PRODUCT FRAMING (carried from Prompt 6b, non-negotiable everywhere in this
+module): the peril is chronic -- outdoor workers lose wages on ~66% of
+worker-days -- and 0 of 36 grid points in the contract-design sweep behaved
+like catastrophe insurance. This is HIGH-FREQUENCY INCOME SMOOTHING, never
+"catastrophe insurance", in every user-facing string, field name, and response.
+
+CONTRACT: strike=75, window=14 days, read from backend/config.py's
+load_contract_config() (backed by backend/data/cities.yaml's `contract:`
+section) -- NEVER hardcoded here, so the API and the backtest cannot drift.
+
+LAZY MODEL LOADING: no *.pt / copula.json / mu_tevi.parquet is read at import
+time -- only inside request handlers -- so this module (and CI) can import
+`app` with zero trained artifacts on disk. A missing artifact returns 503
+rather than crashing.
+
+PRIVACY: lat/lon travel ONLY in POST bodies (never a query string), are used
+transiently to resolve a city, and are never logged or persisted -- only the
+resolved city name is retained (in the in-memory policy cache and responses).
+"""
+
+import uuid
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
+from backend.config import load_contract_config
 from backend.data.location import resolve_city
 from backend.data.wages import WageLoader
+from models.pricing.lsmc_pricer import LSMCPricer
 
-app = FastAPI(title="Pricing the Heat", version="0.1.0")
+limiter = Limiter(key_func=get_remote_address)
+
+app = FastAPI(title="Pricing the Heat", version="0.8.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,7 +55,21 @@ app.add_middleware(
 )
 
 CITIES_YAML_PATH = Path(__file__).parent / "data" / "cities.yaml"
-WAGE_LOSS_PARQUET_PATH = Path("data/processed/wage_loss.parquet")
+MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
+STGCN_PATH = Path("models/artifacts/stgcn.pt")
+FORECASTER_PATH = Path("models/artifacts/forecaster.pt")
+
+MODEL_NOT_TRAINED_DETAIL = "model artifact not trained yet — run make train"
+
+CONTRACT = load_contract_config()          # {"strike", "window_days", "product_type"}
+PRODUCT_TYPE = CONTRACT["product_type"]    # "income_smoothing" -- never "catastrophe_insurance".
+
+# In-memory cache: policy_id -> everything /explain needs to reconstruct the
+# pricer and re-derive an explanation. No DB required (Prompt 7's rule).
+_policy_cache: dict[str, dict[str, Any]] = {}
+
+# Lazy STGCN handle, populated on first /heatmap call only.
+_stgcn_cache: dict[str, Any] = {}
 
 
 def _load_cities_config() -> dict:
@@ -27,9 +77,42 @@ def _load_cities_config() -> dict:
         return yaml.safe_load(f)
 
 
+def _load_pricer() -> LSMCPricer | None:
+    """Lazily loads the frozen LSMC pricer from copula.json. None if untrained."""
+    try:
+        return LSMCPricer.from_copula_json()
+    except FileNotFoundError:
+        return None
+
+
+def _load_stgcn():
+    """Lazily loads the trained STGCN checkpoint. (None, None) if untrained."""
+    if "model" in _stgcn_cache:
+        return _stgcn_cache["model"], _stgcn_cache["ckpt"]
+    if not STGCN_PATH.exists():
+        return None, None
+
+    import torch
+
+    from models.stgcn.model import STGCN
+
+    ckpt = torch.load(STGCN_PATH, map_location="cpu", weights_only=False)
+    cfg = ckpt["config"]
+    model = STGCN(in_channels=cfg["in_channels"], hidden=cfg["hidden"], horizon=cfg["horizon"],
+                  t_in=cfg["t_in"], k_order=cfg["k_order"], kernel_size=cfg["kernel_size"])
+    model.load_state_dict(ckpt["state_dict"])
+    model.eval()
+    _stgcn_cache["model"] = model
+    _stgcn_cache["ckpt"] = ckpt
+    return model, ckpt
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+# --- /resolve-location -----------------------------------------------------
 
 
 class ResolveLocationRequest(BaseModel):
@@ -50,118 +133,339 @@ def resolve_location(req: ResolveLocationRequest):
     """Resolve a real GPS coordinate to the nearest configured city.
 
     lat/lon travel ONLY in this POST body (never a query string) and are used
-    transiently for distance computation -- never logged or persisted.
+    transiently for distance computation -- never logged or persisted. An
+    out-of-coverage point gets an honest message and the nearest city; no
+    pricing/weather is ever fabricated for it.
     """
     cities_cfg = _load_cities_config()
     result = resolve_city(req.lat, req.lon, cities_cfg)
     return ResolveLocationResponse(**result)
 
 
+# --- /simulate-policy -------------------------------------------------------
+
+
+class DateRange(BaseModel):
+    start: date
+    end: date
+
+
 class SimulatePolicyRequest(BaseModel):
-    city: str | None = None
-    occupation: str | None = "vendor"
+    occupation: str = "vendor"
+    date_range: DateRange
     lat: float | None = None
     lon: float | None = None
 
 
+class BasisRiskBlock(BaseModel):
+    basis_risk_rmse: float
+    shortfall_rate: float
+    overpay_rate: float
+    correlation: float
+
+
 class SimulatePolicyResponse(BaseModel):
-    city_key: str
-    city: str
-    mode: str
+    policy_id: str
+    product_type: str = PRODUCT_TYPE
+    coverage_mode: str
+    resolved_city: str | None = None
     distance_km: float | None = None
-    message: str | None = None
     occupation: str | None = None
-    baseline_daily_wage: dict | None = None
-    mean_wage_loss_fraction: float | None = None
+    premium_lsmc: float | None = None
+    premium_wang: float | None = None
+    payout_schedule: dict | None = None
+    mu_tevi_series: list[dict] | None = None
+    basis_risk: BasisRiskBlock | None = None
+    message: str | None = None
     note: str
 
 
-@app.post("/simulate-policy", response_model=SimulatePolicyResponse)
-def simulate_policy(req: SimulatePolicyRequest):
-    """Price wage-loss context for a city -- resolved either explicitly or
-    from an OPTIONAL lat/lon in the body (never a query string).
+def _resolve_for_request(cities_cfg: dict, lat: float | None, lon: float | None) -> dict:
+    """Resolve a city from body-only lat/lon; falls back to the default city.
 
-    NOTE: this returns wage-loss CONTEXT (cited baseline wage + historical
-    mean wage-loss fraction for the resolved city), not a full actuarial
-    premium -- the Longstaff-Schwartz + Wang-Transform pricing engine is a
-    separate, later component. Coordinates are never logged or persisted;
-    only the resolved city name is retained in the response.
+    Coordinates are NEVER accepted from a query string -- only Pydantic body
+    fields reach here at all, so a query-string lat/lon is silently ignored by
+    construction, not merely rejected after the fact.
     """
-    cities_cfg = _load_cities_config()
+    if lat is not None and lon is not None:
+        return resolve_city(lat, lon, cities_cfg)
+    key = cities_cfg["default_city"]
+    city = cities_cfg["cities"][key]
+    return {"city_key": key, "city": city["name"], "distance_km": None, "mode": "configured"}
 
-    if req.lat is not None and req.lon is not None:
-        resolved = resolve_city(req.lat, req.lon, cities_cfg)
-    else:
-        city_key = req.city or cities_cfg["default_city"]
-        if city_key not in cities_cfg["cities"]:
-            return SimulatePolicyResponse(
-                city_key=city_key,
-                city=city_key,
-                mode="out_of_coverage",
-                message=f"'{city_key}' is not a configured city.",
-                note="No pricing computed: unknown city.",
-            )
-        resolved = {
-            "city_key": city_key,
-            "city": cities_cfg["cities"][city_key]["name"],
-            "distance_km": None,
-            "mode": "explicit",
-        }
+
+@app.post("/simulate-policy", response_model=SimulatePolicyResponse)
+@limiter.limit("30/minute")
+def simulate_policy(req: SimulatePolicyRequest, request: Request):
+    """Price the income-smoothing contract (strike/window from backend/config.py)
+    for a resolved city + occupation + real coverage window.
+
+    Surfaces basis_risk as a first-class HONESTY feature (Prompt 6b, carried
+    constraint D): the gap between the index-triggered payout and the
+    worker's modeled loss, not hidden inside a single headline number.
+    """
+    policy_id = str(uuid.uuid4())
+    cities_cfg = _load_cities_config()
+    resolved = _resolve_for_request(cities_cfg, req.lat, req.lon)
 
     if resolved["mode"] == "out_of_coverage":
+        _policy_cache[policy_id] = {"window_days": None}
         return SimulatePolicyResponse(
-            city_key=resolved["city_key"],
-            city=resolved["city"],
-            mode=resolved["mode"],
+            policy_id=policy_id,
+            coverage_mode=resolved["mode"],
+            resolved_city=resolved["city"],
             distance_km=resolved.get("distance_km"),
             message=resolved.get("message"),
             note="No pricing computed: location is outside covered cities. "
                  "No data was fabricated for this point.",
         )
 
-    occupation = req.occupation or "vendor"
-    wage_loader = WageLoader()
-    baseline_wages = wage_loader.occupation_baseline_wages(city_key=resolved["city_key"])
-    wage_provenance = {
-        rec["occupation"]: rec
-        for rec in wage_loader.wage_provenance(city_key=resolved["city_key"])
-    }
+    pricer = _load_pricer()
+    if pricer is None:
+        raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
 
-    if occupation not in baseline_wages:
-        return SimulatePolicyResponse(
-            city_key=resolved["city_key"],
-            city=resolved["city"],
-            mode=resolved["mode"],
-            distance_km=resolved.get("distance_km"),
-            note=f"No pricing computed: unknown occupation '{occupation}'.",
+    wage_loader = WageLoader(country_iso3=cities_cfg["cities"][resolved["city_key"]]["country_iso3"])
+    baseline_wages = wage_loader.occupation_baseline_wages(city_key=resolved["city_key"])
+    if req.occupation not in baseline_wages:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown occupation '{req.occupation}'; have {sorted(baseline_wages)}",
         )
 
-    wage_rec = wage_provenance[occupation]
-    verified_tag = "verified" if wage_rec["verified"] else "UNVERIFIED"
+    window_days = int(CONTRACT["window_days"])
+    if req.date_range.end < req.date_range.start:
+        raise HTTPException(status_code=400, detail="date_range.end must be >= date_range.start")
 
-    mean_fraction = None
-    if WAGE_LOSS_PARQUET_PATH.exists():
-        import pandas as pd
+    if not MU_TEVI_PATH.exists():
+        raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
+    city_index = pd.read_parquet(MU_TEVI_PATH).sort_values("ts").reset_index(drop=True)
+    start_ts = pd.Timestamp(req.date_range.start)
+    window_df = city_index[city_index["ts"] >= start_ts].head(window_days)
+    if len(window_df) < window_days:
+        raise HTTPException(
+            status_code=404,
+            detail=f"real mu-TEVI data does not cover a full {window_days}-day window "
+                   f"starting {req.date_range.start}; no data was fabricated to fill it",
+        )
 
-        df = pd.read_parquet(WAGE_LOSS_PARQUET_PATH)
-        subset = df[df["occupation"] == occupation]
-        if not subset.empty:
-            mean_fraction = float(subset["wage_loss_fraction"].mean())
+    window_values = window_df["mu_tevi"].to_numpy()
+    result = pricer.price_window(window_values, req.occupation)
+
+    _policy_cache[policy_id] = {
+        "occupation": req.occupation,
+        "window_days": window_days,
+        "strike": pricer.strike,
+        "cap": pricer.cap,
+        "city_key": resolved["city_key"],
+    }
 
     return SimulatePolicyResponse(
-        city_key=resolved["city_key"],
-        city=resolved["city"],
-        mode=resolved["mode"],
+        policy_id=policy_id,
+        coverage_mode=resolved["mode"],
+        resolved_city=resolved["city"],
         distance_km=resolved.get("distance_km"),
-        occupation=occupation,
-        baseline_daily_wage={
-            "value": wage_rec["value"],
-            "currency": wage_rec["currency"],
-            "verified": wage_rec["verified"],
-        },
-        mean_wage_loss_fraction=mean_fraction,
+        occupation=req.occupation,
+        premium_lsmc=result["premium_lsmc"],
+        premium_wang=result["premium_wang"],
+        payout_schedule=result["payout_schedule"],
+        mu_tevi_series=[
+            {"ts": row["ts"].date().isoformat(), "mu_tevi": float(row["mu_tevi"])}
+            for _, row in window_df.iterrows()
+        ],
+        basis_risk=BasisRiskBlock(**result["basis_risk"]),
         note=(
-            f"Wage-loss context only (baseline wage is {verified_tag}); "
-            f"full actuarial premium pricing is not yet implemented."
+            f"Priced as high-frequency income smoothing (NOT catastrophe insurance): "
+            f"a {window_days}-day coverage window at strike {pricer.strike:.0f} mu-TEVI, "
+            f"starting {req.date_range.start}. basis_risk reports how often the index "
+            f"under/over-pays the worker's own modeled loss -- inherent to any "
+            f"parametric product, surfaced honestly rather than hidden."
         ),
     )
+
+
+# --- /explain/{policy_id} ---------------------------------------------------
+
+
+def _explain_contract(pricer: LSMCPricer, window_days: int, n_paths: int = 1000,
+                      seed: int = 42) -> dict:
+    """Feature-contribution surrogate for the priced contract.
+
+    price_window's premium is a Bermudan (one-shot optimal-stopping) LSMC
+    value with no native SHAP-compatible model, so this fits a small
+    transparent linear surrogate -- regressing each simulated path's
+    discounted payoff on three summary features of that path's mu-TEVI window
+    -- and explains THAT surrogate. Uses shap.LinearExplainer if shap installs
+    cleanly; otherwise falls back to sklearn permutation importance on the
+    same regression. Either way this never blocks on SHAP being available.
+    """
+    rng = np.random.default_rng(seed)
+    mutevi_paths, _loss_paths = pricer.simulate_paths(window_days, n_paths, rng)
+    priced = pricer.price_paths(mutevi_paths, _loss_paths)
+    y = priced["discounted_payoffs"]
+
+    feature_names = ["max_index_in_window", "mean_index_in_window", "fraction_days_above_strike"]
+    x = np.column_stack([
+        mutevi_paths.max(axis=1),
+        mutevi_paths.mean(axis=1),
+        (mutevi_paths >= pricer.strike).mean(axis=1),
+    ])
+
+    from sklearn.linear_model import LinearRegression
+    model = LinearRegression().fit(x, y)
+
+    try:
+        import shap
+
+        explainer = shap.LinearExplainer(model, x)
+        shap_values = explainer.shap_values(x)
+        contributions = {name: float(np.abs(shap_values[:, i]).mean())
+                         for i, name in enumerate(feature_names)}
+        method = "shap"
+    except ImportError:
+        from sklearn.inspection import permutation_importance
+
+        r = permutation_importance(model, x, y, n_repeats=10, random_state=seed)
+        contributions = {name: float(max(r.importances_mean[i], 0.0))
+                         for i, name in enumerate(feature_names)}
+        method = "permutation_importance"
+
+    total = sum(contributions.values()) or 1.0
+    return {
+        "method": method,
+        "feature_contributions": contributions,
+        "feature_contributions_normalized": {k: v / total for k, v in contributions.items()},
+        "note": "Surrogate explanation of the LSMC premium's sensitivity to the priced "
+                "window's heat-index summary -- not a decomposition of the exact Bermudan "
+                "value, which has no closed-form attribution.",
+    }
+
+
+@app.get("/explain/{policy_id}")
+def explain(policy_id: str):
+    cached = _policy_cache.get(policy_id)
+    if cached is None:
+        raise HTTPException(status_code=404, detail=f"unknown policy_id {policy_id!r}")
+    if cached.get("window_days") is None:
+        raise HTTPException(
+            status_code=404,
+            detail="policy has no priced contract to explain (out-of-coverage / unpriced)",
+        )
+
+    try:
+        pricer = LSMCPricer.from_copula_json(strike=cached["strike"], cap=cached["cap"])
+    except FileNotFoundError:
+        raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
+
+    explanation = _explain_contract(pricer, cached["window_days"])
+    return {"policy_id": policy_id, **explanation}
+
+
+# --- /heatmap ---------------------------------------------------------------
+
+
+@app.get("/heatmap")
+def heatmap(date: str | None = None):
+    """GeoJSON of the real grid: each cell carries its own STGCN-forecast
+    heat_index (per-node shade-WBGT, degC) AND the requested date's
+    CITY-LEVEL mu_tevi (the fused index -- the SAME value across every cell,
+    since one mu-TEVI index covers the whole city; see models.fusion.tevi).
+    """
+    model, ckpt = _load_stgcn()
+    if model is None:
+        raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
+
+    import torch
+
+    from models.stgcn.train import load_weather, to_node_time_matrix
+
+    weather = load_weather()
+    arr, node_ids_current, _coords = to_node_time_matrix(weather)
+    dates_sorted = sorted(weather["date"].unique())
+
+    if date is None:
+        target = dates_sorted[-1]
+    else:
+        target = pd.Timestamp(date)
+        if target not in dates_sorted:
+            raise HTTPException(
+                status_code=404,
+                detail=f"date {date} is not covered by the real weather data on disk",
+            )
+
+    node_order = ckpt["graph"]["node_ids"]
+    col_index = {nid: i for i, nid in enumerate(node_ids_current)}
+    reorder = [col_index[nid] for nid in node_order]
+    arr = arr[:, reorder]
+
+    t_in = ckpt["config"]["t_in"]
+    idx = dates_sorted.index(target)
+    if idx < t_in:
+        raise HTTPException(
+            status_code=400,
+            detail=f"insufficient real history before {target.date()} "
+                   f"(need {t_in} prior days on disk)",
+        )
+
+    mu, sigma = ckpt["norm"]["mu"], ckpt["norm"]["sigma"]
+    window = arr[idx - t_in:idx]
+    x = torch.from_numpy(((window - mu) / sigma)[None, :, :, None].astype(np.float32))
+    basis = torch.from_numpy(ckpt["graph"]["cheb_basis"]).float()
+    with torch.no_grad():
+        pred = model(x, basis).numpy()[0]  # (N, horizon)
+    heat_index = pred[:, 0] * sigma + mu    # first horizon day == `target`
+
+    mu_tevi_value = None
+    if MU_TEVI_PATH.exists():
+        city_index = pd.read_parquet(MU_TEVI_PATH)
+        row = city_index[city_index["ts"] == target]
+        if not row.empty:
+            mu_tevi_value = float(row["mu_tevi"].iloc[0])
+
+    coords = ckpt["graph"]["coords"]
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [float(coords[i][1]), float(coords[i][0])]},
+            "properties": {
+                "node_id": nid,
+                "heat_index": float(heat_index[i]),
+                "mu_tevi": mu_tevi_value,
+            },
+        }
+        for i, nid in enumerate(node_order)
+    ]
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "metadata": {
+            "date": str(target.date()),
+            "product_type": PRODUCT_TYPE,
+            "note": "heat_index is the per-node STGCN shade-WBGT forecast (degC), one value "
+                    "per real grid cell. mu_tevi is the CITY-LEVEL fused index and is "
+                    "IDENTICAL across every cell for this date -- there is one contract "
+                    "trigger for the whole city, not a per-node one.",
+        },
+    }
+
+
+# --- /forecast (Prompt 8, lazy) ---------------------------------------------
+
+
+@app.get("/forecast")
+def forecast(horizon_days: int = 7):
+    if not FORECASTER_PATH.exists():
+        raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
+    raise HTTPException(status_code=503, detail="forecast endpoint not yet implemented (Prompt 8)")
+
+
+# --- /assistant/ask (Prompt 9, lazy) ----------------------------------------
+
+
+class AssistantAskRequest(BaseModel):
+    question: str
+
+
+@app.post("/assistant/ask")
+@limiter.limit("30/minute")
+def assistant_ask(req: AssistantAskRequest, request: Request):
+    raise HTTPException(status_code=503, detail="assistant endpoint not yet implemented (Prompt 9)")

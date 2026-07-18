@@ -55,6 +55,7 @@ import yaml
 from scipy.stats import genextreme
 from sklearn.linear_model import RidgeCV
 
+from backend.config import load_contract_config
 from backend.data.build_wage_loss import CITIES_YAML_PATH
 from backend.data.elasticity import MAX_LOSS_FRACTION
 from backend.data.wages import WageLoader
@@ -68,10 +69,13 @@ SEED = 42
 COPULA_PATH = Path("models/artifacts/copula.json")
 MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
 
-# Contract defaults.
-DEFAULT_STRIKE = 75.0            # mu-TEVI trigger (index in [0,100]); ~upper quartile.
+# Contract defaults -- sourced from backend/data/cities.yaml's `contract:`
+# section (the CHOSEN strike/window, Prompt 6b), NOT hardcoded here, so the
+# backtest and the API can never silently drift apart. See backend/config.py.
+_CONTRACT = load_contract_config()
+DEFAULT_STRIKE = float(_CONTRACT["strike"])     # mu-TEVI trigger (index in [0,100]).
 PAYOUT_CAP = MAX_LOSS_FRACTION   # 0.9; caps payout at the same ceiling as modeled loss.
-DEFAULT_HORIZON = 30             # days, if no window is supplied.
+DEFAULT_HORIZON = int(_CONTRACT["window_days"])  # days, if no window is supplied.
 
 # Monte-Carlo / numerics.
 DEFAULT_M = 2000

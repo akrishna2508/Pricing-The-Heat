@@ -80,7 +80,7 @@ MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
 WAGE_LOSS_PATH = Path("data/processed/wage_loss.parquet")
 CLAIMS_PATH = Path("data/processed/claims.parquet")
 
-WINDOW_DAYS = DEFAULT_HORIZON  # 30 -- same horizon Prompt 5's CLI example used.
+WINDOW_DAYS = DEFAULT_HORIZON  # sourced from the shared contract config (14d), see backend/config.py.
 
 
 def load_wages() -> dict[str, float]:
