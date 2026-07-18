@@ -26,13 +26,18 @@ train:
 	PYTHONPATH=. python -m models.behavioral_agent.calibration
 	PYTHONPATH=. python -m models.stgcn.evaluate_spatial
 	PYTHONPATH=. python -m models.fusion.tevi
+	PYTHONPATH=. python -m models.forecast.train
 
 backtest:
 	PYTHONPATH=. python -m backend.backtest.report
+	PYTHONPATH=. python -m models.anomaly.train
 
 # Order matters: build_wage_loss writes the literature-based wage_loss.parquet,
 # then calibration.py overwrites it with the behaviorally-calibrated version
-# (same schema) that Prompt 4 consumes as F_L.
+# (same schema) that Prompt 4 consumes as F_L. models.forecast.train needs
+# mu_tevi.parquet (written by models.fusion.tevi, just before it). backtest.report
+# writes claims.parquet, which models.anomaly.train needs -- so it must run
+# after the replay, never before.
 reproduce:
 	PYTHONPATH=. python -m backend.data.build_wage_loss
 	PYTHONPATH=. python -m models.stgcn.train
@@ -40,7 +45,9 @@ reproduce:
 	PYTHONPATH=. python -m models.behavioral_agent.calibration
 	PYTHONPATH=. python -m models.stgcn.evaluate_spatial
 	PYTHONPATH=. python -m models.fusion.tevi
+	PYTHONPATH=. python -m models.forecast.train
 	PYTHONPATH=. python -m backend.backtest.report
+	PYTHONPATH=. python -m models.anomaly.train
 
 test:
 	PYTHONPATH=. pytest tests/unit -q

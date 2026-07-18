@@ -154,7 +154,13 @@ def test_explain_unknown_policy_id_returns_404():
     assert resp.status_code == 404
 
 
-def test_forecast_without_trained_model_returns_503():
+def test_forecast_without_trained_model_returns_503(monkeypatch):
+    # /forecast is now wired to a real GRU forecaster (Prompt 8); this test
+    # only covers the lazy-503 path, so it forces the untrained state rather
+    # than assuming forecaster.pt is absent (see tests/unit/test_forecast.py
+    # for the real-artifact coverage).
+    monkeypatch.setattr(main_module, "FORECASTER_PATH", Path("models/artifacts/__does_not_exist__.pt"))
+    main_module._forecaster_cache.clear()
     resp = client.get("/forecast")
     assert resp.status_code == 503
 

@@ -1,4 +1,5 @@
-"""FastAPI backend exposing the pipeline as a service (Prompt 7).
+"""FastAPI backend exposing the pipeline as a service (Prompt 7; /forecast and
+/flag-anomaly wired to real models in Prompt 8).
 
 PRODUCT FRAMING (carried from Prompt 6b, non-negotiable everywhere in this
 module): the peril is chronic -- outdoor workers lose wages on ~66% of
@@ -58,6 +59,7 @@ CITIES_YAML_PATH = Path(__file__).parent / "data" / "cities.yaml"
 MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
 STGCN_PATH = Path("models/artifacts/stgcn.pt")
 FORECASTER_PATH = Path("models/artifacts/forecaster.pt")
+ANOMALY_PATH = Path("models/artifacts/anomaly.pkl")
 
 MODEL_NOT_TRAINED_DETAIL = "model artifact not trained yet — run make train"
 
@@ -70,6 +72,12 @@ _policy_cache: dict[str, dict[str, Any]] = {}
 
 # Lazy STGCN handle, populated on first /heatmap call only.
 _stgcn_cache: dict[str, Any] = {}
+
+# Lazy GRU forecaster handle, populated on first /forecast call only.
+_forecaster_cache: dict[str, Any] = {}
+
+# Lazy anomaly-detector handle, populated on first /flag-anomaly call only.
+_anomaly_cache: dict[str, Any] = {}
 
 
 def _load_cities_config() -> dict:
@@ -448,14 +456,131 @@ def heatmap(date: str | None = None):
     }
 
 
-# --- /forecast (Prompt 8, lazy) ---------------------------------------------
+# --- /forecast (Prompt 8) ---------------------------------------------------
+
+
+def _load_forecaster():
+    """Lazily loads the trained GRU forecaster checkpoint. (None, None) if untrained."""
+    if "model" in _forecaster_cache:
+        return _forecaster_cache["model"], _forecaster_cache["ckpt"]
+    if not FORECASTER_PATH.exists():
+        return None, None
+
+    import torch
+
+    from models.forecast.model import GRUForecaster
+
+    ckpt = torch.load(FORECASTER_PATH, map_location="cpu", weights_only=False)
+    cfg = ckpt["config"]
+    model = GRUForecaster(input_size=cfg["input_size"], hidden=cfg["hidden"], horizon=cfg["horizon"])
+    model.load_state_dict(ckpt["state_dict"])
+    model.eval()
+    _forecaster_cache["model"] = model
+    _forecaster_cache["ckpt"] = ckpt
+    return model, ckpt
 
 
 @app.get("/forecast")
 def forecast(horizon_days: int = 7):
-    if not FORECASTER_PATH.exists():
+    """GRU forecast of the city-level mu-TEVI index, `horizon_days` ahead of
+    the most recent real day on disk. Surfaces the training-time validation
+    comparison against a persistence baseline (Prompt 8's honesty requirement)
+    on every call, not just at training time.
+    """
+    model, ckpt = _load_forecaster()
+    if model is None:
         raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
-    raise HTTPException(status_code=503, detail="forecast endpoint not yet implemented (Prompt 8)")
+
+    max_horizon = ckpt["config"]["horizon"]
+    if not 1 <= horizon_days <= max_horizon:
+        raise HTTPException(
+            status_code=400,
+            detail=f"horizon_days must be in [1, {max_horizon}] (forecaster trained to {max_horizon}d)",
+        )
+
+    import torch
+
+    mu, sigma = ckpt["norm"]["mu"], ckpt["norm"]["sigma"]
+    last_window = np.asarray(ckpt["last_window"], dtype=np.float32)
+    x = torch.from_numpy(((last_window - mu) / sigma)[None, :, None].astype(np.float32))
+    with torch.no_grad():
+        pred_norm = model(x).numpy()[0]  # (horizon,)
+    pred = pred_norm * sigma + mu
+
+    last_date = pd.Timestamp(ckpt["last_date"])
+    metrics = ckpt["metrics"]
+    return {
+        "as_of": last_date.date().isoformat(),
+        "horizon_days": horizon_days,
+        "forecast": [
+            {
+                "days_ahead": h + 1,
+                "ts": (last_date + pd.Timedelta(days=h + 1)).date().isoformat(),
+                "mu_tevi": float(pred[h]),
+            }
+            for h in range(horizon_days)
+        ],
+        "validation": {
+            "model_mae": metrics["model_mae"],
+            "persistence_mae": metrics["persistence_mae"],
+            "beats_persistence": metrics["beats_persistence"],
+            "note": "GRU forecaster's chronological hold-out MAE vs a persistence "
+                    "(tomorrow=today) baseline, reported honestly whichever wins -- "
+                    "see models/forecast/train.py.",
+        },
+    }
+
+
+# --- /flag-anomaly (Prompt 8) ------------------------------------------------
+
+
+def _load_anomaly_detector():
+    """Lazily loads the trained IsolationForest claim-anomaly detector. None if untrained."""
+    if "detector" in _anomaly_cache:
+        return _anomaly_cache["detector"]
+    if not ANOMALY_PATH.exists():
+        return None
+
+    import pickle
+
+    with open(ANOMALY_PATH, "rb") as f:
+        detector = pickle.load(f)
+    _anomaly_cache["detector"] = detector
+    return detector
+
+
+class FlagAnomalyRequest(BaseModel):
+    heat_index: float
+    occupation: str
+    claimed_payout: float
+    days_since_last_claim: float | None = None
+
+
+class FlagAnomalyResponse(BaseModel):
+    is_anomalous: bool
+    anomaly_score: float
+
+
+@app.post("/flag-anomaly", response_model=FlagAnomalyResponse)
+def flag_anomaly(req: FlagAnomalyRequest):
+    """Score a single claim's feature vector against the trained Isolation
+    Forest (top 1% most anomalous flagged, see models/anomaly/detector.py).
+    """
+    detector = _load_anomaly_detector()
+    if detector is None:
+        raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
+
+    row = pd.DataFrame([{
+        "heat_index": req.heat_index,
+        "occupation": req.occupation,
+        "claimed_payout": req.claimed_payout,
+        "days_since_last_claim": (
+            req.days_since_last_claim if req.days_since_last_claim is not None else float("nan")
+        ),
+    }])
+    is_anomalous = bool(detector.predict(row)[0])
+    anomaly_score = float(detector.score(row)[0])
+    return FlagAnomalyResponse(is_anomalous=is_anomalous, anomaly_score=anomaly_score)
 
 
 # --- /assistant/ask (Prompt 9, lazy) ----------------------------------------
