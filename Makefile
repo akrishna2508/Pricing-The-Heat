@@ -28,7 +28,7 @@ train:
 	PYTHONPATH=. python -m models.fusion.tevi
 
 backtest:
-	@echo "TODO: Implement backtesting pipeline"
+	PYTHONPATH=. python -m backend.backtest.report
 
 # Order matters: build_wage_loss writes the literature-based wage_loss.parquet,
 # then calibration.py overwrites it with the behaviorally-calibrated version
@@ -40,6 +40,7 @@ reproduce:
 	PYTHONPATH=. python -m models.behavioral_agent.calibration
 	PYTHONPATH=. python -m models.stgcn.evaluate_spatial
 	PYTHONPATH=. python -m models.fusion.tevi
+	PYTHONPATH=. python -m backend.backtest.report
 
 test:
 	PYTHONPATH=. pytest tests/unit -q

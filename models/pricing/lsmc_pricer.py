@@ -274,6 +274,46 @@ class LSMCPricer:
         return float(wages[occupation])
 
 
+def persistence_premium_gap(pricer: LSMCPricer, window: np.ndarray, n_paths: int,
+                            rng: np.random.Generator) -> float:
+    """The same-marginal time-reordering test referenced in this module's
+    docstring, formalized as reusable code (it previously existed only as an
+    ad-hoc investigation script, not shipped code -- this is that method,
+    extracted verbatim in spirit so Prompt 6's real-data number is directly
+    comparable to the ~7% measured here on simulated data).
+
+    Holds the MARGINAL exactly fixed -- both variants use precisely the same N
+    values, `window`'s own -- and varies only the TIME ORDER:
+
+      (a) i.i.d.-shuffled: each of the n_paths simulated paths gets an
+          INDEPENDENT random permutation of `window`'s values (destroys
+          autocorrelation, keeps the marginal).
+      (b) real ordered: every path replays `window` in its EXACT real order
+          (autocorrelation intact). All paths are then identical, so this
+          collapses the LSMC regression to the single-path optimal-stopping
+          value of that one real trajectory -- which is exactly the quantity
+          wanted for comparison.
+
+    Returns (premium_a - premium_b) / premium_b * 100, a percentage. The payoff
+    is a pure function of the mu-TEVI index (see price_paths), so loss_paths is
+    passed as zeros here -- irrelevant to the premium, never read for it.
+    """
+    n_days = len(window)
+    if n_days < 2:
+        raise ValueError("need >= 2 days to compare orderings")
+    dummy_loss = np.zeros((n_paths, n_days))
+
+    shuffled = np.array([rng.permutation(window) for _ in range(n_paths)])
+    premium_a = pricer.price_paths(shuffled, dummy_loss)["premium_lsmc_fraction"]
+
+    ordered = np.tile(window, (n_paths, 1))
+    premium_b = pricer.price_paths(ordered, dummy_loss)["premium_lsmc_fraction"]
+
+    if premium_b == 0.0:
+        return float("nan")
+    return (premium_a - premium_b) / premium_b * 100.0
+
+
 def main() -> int:
     rng_window = np.random.default_rng(SEED)
     print("=" * 74)
