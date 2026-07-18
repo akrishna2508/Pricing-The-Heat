@@ -236,8 +236,8 @@ def main() -> int:
     print(f"[REAL API] NASA POWER shade-WBGT: {len(h_flat)} real node-days, "
           f"mean={h_flat.mean():.2f}C sd={h_flat.std():.2f}C "
           f"[{h_flat.min():.1f}, {h_flat.max():.1f}]")
-    print(f"[CITED]    target = elasticity ramp per occupation "
-          f"(the ONE labeled modeling assumption)")
+    print("[CITED]    target = elasticity ramp per occupation "
+          "(the ONE labeled modeling assumption)")
     print(f"[MODEL]    logit P(rest|h) = sigmoid((kappa*exp(gamma*h) - wage)/tau), "
           f"tau = {TAU_WAGE_FRACTION} * wage (FIXED -- see module docstring)")
     print()
@@ -309,8 +309,8 @@ def main() -> int:
     wage_loss.to_parquet(WAGE_LOSS_PATH, index=False)
     print(f"[ARTIFACT] {WAGE_LOSS_PATH}  rows={len(wage_loss)} "
           f"cols={list(wage_loss.columns)}")
-    print(f"           behaviorally-calibrated F_L (overwrote the Prompt-1 "
-          f"literature version, same schema)")
+    print("           behaviorally-calibrated F_L (overwrote the Prompt-1 "
+          "literature version, same schema)")
 
     # --- residual plot ----------------------------------------------------
     fig, axes = plt.subplots(2, len(OCCUPATIONS), figsize=(4.1 * len(OCCUPATIONS), 7.2))

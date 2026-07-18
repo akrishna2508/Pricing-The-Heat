@@ -106,7 +106,12 @@ def _load_stgcn():
 
     from models.stgcn.model import STGCN
 
-    ckpt = torch.load(STGCN_PATH, map_location="cpu", weights_only=False)
+    # STGCN_PATH is a fixed, server-authored constant (never derived from any
+    # request parameter), so this never deserializes attacker-controlled
+    # input; weights_only=False is required because the checkpoint carries
+    # non-tensor config/graph data alongside the state_dict (see
+    # models/stgcn/train.py). See SECURITY.md.
+    ckpt = torch.load(STGCN_PATH, map_location="cpu", weights_only=False)  # nosec B614
     cfg = ckpt["config"]
     model = STGCN(in_channels=cfg["in_channels"], hidden=cfg["hidden"], horizon=cfg["horizon"],
                   t_in=cfg["t_in"], k_order=cfg["k_order"], kernel_size=cfg["kernel_size"])
@@ -290,10 +295,10 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
         ],
         basis_risk=BasisRiskBlock(**result["basis_risk"]),
         note=(
-            f"Priced as high-frequency income smoothing (NOT catastrophe insurance): "
-            f"a {window_days}-day coverage window at strike {pricer.strike:.0f} mu-TEVI, "
-            f"starting {req.date_range.start}. basis_risk reports how often the index "
-            f"under/over-pays the worker's own modeled loss -- inherent to any "
+            f"Priced as high-frequency income smoothing (not cover for a rare, one-off "
+            f"disaster): a {window_days}-day coverage window at strike {pricer.strike:.0f} "
+            f"mu-TEVI, starting {req.date_range.start}. basis_risk reports how often the "
+            f"index under/over-pays the worker's own modeled loss -- inherent to any "
             f"parametric product, surfaced honestly rather than hidden."
         ),
     )
@@ -478,7 +483,10 @@ def _load_forecaster():
 
     from models.forecast.model import GRUForecaster
 
-    ckpt = torch.load(FORECASTER_PATH, map_location="cpu", weights_only=False)
+    # FORECASTER_PATH is a fixed, server-authored constant (never derived
+    # from any request parameter); see the identical rationale on
+    # STGCN_PATH's torch.load above, and SECURITY.md.
+    ckpt = torch.load(FORECASTER_PATH, map_location="cpu", weights_only=False)  # nosec B614
     cfg = ckpt["config"]
     model = GRUForecaster(input_size=cfg["input_size"], hidden=cfg["hidden"], horizon=cfg["horizon"])
     model.load_state_dict(ckpt["state_dict"])
@@ -551,8 +559,11 @@ def _load_anomaly_detector():
 
     import pickle
 
+    # ANOMALY_PATH is a fixed, server-authored constant (never derived from
+    # any request parameter), so this never deserializes attacker-controlled
+    # input. See SECURITY.md.
     with open(ANOMALY_PATH, "rb") as f:
-        detector = pickle.load(f)
+        detector = pickle.load(f)  # nosec B301
     _anomaly_cache["detector"] = detector
     return detector
 

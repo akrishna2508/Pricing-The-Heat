@@ -27,7 +27,6 @@ from backend.data import elasticity
 from backend.data.build_wage_loss import CITIES_YAML_PATH
 from backend.data.wages import WageLoader, WORLD_BANK_HOST
 from backend.data.weather import POWER_HOST, WeatherLoader
-from models.fusion.marginals import CITED_ZERO_THRESHOLD_C
 from models.pricing.baseline_flat_rate import FlatRatePricer
 from models.pricing.basis_risk import DegenerateBasisRiskError
 from models.pricing.lsmc_pricer import payout_fraction
@@ -84,7 +83,6 @@ def _sensitivity_sweep(pricer_kwargs: dict) -> dict:
     d = pricer_kwargs
     gev = d["gev_params"]
     hurdle = d["hurdle"]
-    rng = np.random.default_rng(42)
 
     theta_rows = []
     for mult in (0.7, 1.0, 1.3):
@@ -265,7 +263,6 @@ def main() -> int:
     try:
         basis = m.basis_risk_empirical(daily["payout_daily"].to_numpy(),
                                        daily["actual_loss_amt"].to_numpy())
-        basis_degenerate = False
     except DegenerateBasisRiskError as exc:
         print(f"FATAL: basis risk pairing is degenerate: {exc}")
         return 1
@@ -346,14 +343,14 @@ def main() -> int:
 
     lines.append("## Modeling Assumptions\n")
     lines.append("> **Elasticity**: ~2.6%/C wage loss above 24C WBGT (default), "
-                f"~0.57%/C for construction (Foster/Kjellstrom meta-analysis; "
-                f"construction-sector WBGT productivity study).\n"
-                f">\n"
-                f"> **tau convention**: kappa/gamma (Prompt 3's behavioral calibration) "
-                f"are CONDITIONAL on the fixed logit choice-noise scale "
-                f"tau = 0.1*wage. (kappa, gamma, tau) are jointly non-identified from "
-                f"a single choice curve; a different tau describes the same curve with "
-                f"different kappa/gamma. They are not free-standing physical constants.\n")
+                "~0.57%/C for construction (Foster/Kjellstrom meta-analysis; "
+                "construction-sector WBGT productivity study).\n"
+                ">\n"
+                "> **tau convention**: kappa/gamma (Prompt 3's behavioral calibration) "
+                "are CONDITIONAL on the fixed logit choice-noise scale "
+                "tau = 0.1*wage. (kappa, gamma, tau) are jointly non-identified from "
+                "a single choice curve; a different tau describes the same curve with "
+                "different kappa/gamma. They are not free-standing physical constants.\n")
 
     lines.append("## Headline: MAE (full model vs flat-rate baseline) — PRIMARY metric\n")
     lines.append(
@@ -427,14 +424,14 @@ def main() -> int:
             "coverage necessarily has premium/cap > 0.8 -- the mathematical signature of "
             "income smoothing, not tail insurance.\n")
         lines.append(
-            f"**The product is therefore honestly reframed as high-frequency INCOME "
-            f"SMOOTHING**, and the contract is selected for that objective: an UNBIASED "
-            f"index (minimize |shortfall - overpay|, fixing the strike), then the window "
-            f"that MAXIMIZES genuine risk transfer (lowest premium/cap). The contract is "
-            f"chosen on product quality, never on the model-vs-baseline metric -- picking "
-            f"the window that flatters the MAE gap would be goalpost-gaming and is "
-            f"explicitly not done (the chosen 14-day window in fact has a SMALLER MAE gap "
-            f"than a 30-day window would).\n")
+            "**The product is therefore honestly reframed as high-frequency INCOME "
+            "SMOOTHING**, and the contract is selected for that objective: an UNBIASED "
+            "index (minimize |shortfall - overpay|, fixing the strike), then the window "
+            "that MAXIMIZES genuine risk transfer (lowest premium/cap). The contract is "
+            "chosen on product quality, never on the model-vs-baseline metric -- picking "
+            "the window that flatters the MAE gap would be goalpost-gaming and is "
+            "explicitly not done (the chosen 14-day window in fact has a SMALLER MAE gap "
+            "than a 30-day window would).\n")
     lines.append(
         f"**Chosen contract: strike {chosen['strike']} mu-TEVI, {chosen['window']}-day "
         f"window** ({chosen['frame'].replace('_', ' ')}). On the real replay: "
@@ -499,24 +496,24 @@ def main() -> int:
                 f"({persistence['n_windows_undefined']} windows never reach the strike "
                 f"under either ordering -- gap is 0/0, undefined, and excluded).\n")
     lines.append(
-        f"**Methodological note (why the sign differs from Prompt 5's simulated "
-        f"figure)**: Prompt 5's test varied AR(1) persistence across M INDEPENDENT "
-        f"simulated realizations sharing one marginal, preserving genuine "
-        f"stopping-under-uncertainty in both cases. Here, \"the real ordered window\" is "
-        f"the ONE real historical realization, replicated identically across paths for "
-        f"the LSMC call; with zero cross-sectional variance the regression collapses "
-        f"toward the near-perfect-foresight value of that one history, which is "
-        f"mechanically >= the genuine stopping-under-uncertainty value of the shuffled "
-        f"case -- hence a NEGATIVE gap here versus the positive ~7% on simulated data. "
-        f"Both are honestly reported; they are not the same experiment, just the same "
-        f"reordering principle applied to what data was actually available.\n")
+        "**Methodological note (why the sign differs from Prompt 5's simulated "
+        "figure)**: Prompt 5's test varied AR(1) persistence across M INDEPENDENT "
+        "simulated realizations sharing one marginal, preserving genuine "
+        "stopping-under-uncertainty in both cases. Here, \"the real ordered window\" is "
+        "the ONE real historical realization, replicated identically across paths for "
+        "the LSMC call; with zero cross-sectional variance the regression collapses "
+        "toward the near-perfect-foresight value of that one history, which is "
+        "mechanically >= the genuine stopping-under-uncertainty value of the shuffled "
+        "case -- hence a NEGATIVE gap here versus the positive ~7% on simulated data. "
+        "Both are honestly reported; they are not the same experiment, just the same "
+        "reordering principle applied to what data was actually available.\n")
 
     lines.append("## Basis Risk (empirical, real replay)\n")
     lines.append(f"Computed on {len(daily):,} real worker-days "
                 f"({n_workers} workers x {n_days} days), pairing the index-triggered "
                 f"daily payout against each worker's own hurdle-model wage loss.\n")
-    lines.append(f"| basis_risk_rmse | shortfall_rate | overpay_rate | correlation |")
-    lines.append(f"|---|---|---|---|")
+    lines.append("| basis_risk_rmse | shortfall_rate | overpay_rate | correlation |")
+    lines.append("|---|---|---|---|")
     lines.append(f"| {basis['basis_risk_rmse']:.2f} INR | "
                 f"{basis['shortfall_rate'] * 100:.1f}% | {basis['overpay_rate'] * 100:.1f}% | "
                 f"{basis['correlation']:.3f} |\n")
@@ -535,9 +532,9 @@ def main() -> int:
 
     lines.append("## Sensitivity Sweep\n")
     lines.append("theta moves the premium (it directly parameterizes the copula the "
-                f"mu-TEVI index is built from); the loss-marginal shape (traceable to "
-                f"Prompt 3's kappa/gamma) does NOT -- verified live, not assumed: the "
-                f"payout is a pure function of the index, independent of the loss draw.\n")
+                "mu-TEVI index is built from); the loss-marginal shape (traceable to "
+                "Prompt 3's kappa/gamma) does NOT -- verified live, not assumed: the "
+                "payout is a pure function of the index, independent of the loss draw.\n")
     lines.append("| theta multiplier | theta | premium (wage-frac) |")
     lines.append("|---|---|---|")
     for row in sensitivity["theta_sweep"]:

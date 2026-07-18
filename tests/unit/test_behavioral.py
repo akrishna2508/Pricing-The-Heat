@@ -166,7 +166,7 @@ def test_gae_matches_the_explicit_discounted_sum():
         next_v = last_value if t == n - 1 else values[t + 1]
         deltas[t] = rewards[t] + gamma * next_v - values[t]
     expected = np.array([
-        sum((gamma * lam) ** l * deltas[t + l] for l in range(n - t)) for t in range(n)
+        sum((gamma * lam) ** k * deltas[t + k] for k in range(n - t)) for t in range(n)
     ])
     np.testing.assert_allclose(adv, expected, rtol=1e-10)
     np.testing.assert_allclose(returns, expected + values, rtol=1e-10)

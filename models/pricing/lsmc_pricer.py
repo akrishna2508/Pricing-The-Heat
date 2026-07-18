@@ -52,7 +52,6 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from scipy.stats import genextreme
 from sklearn.linear_model import RidgeCV
 
 from backend.config import load_contract_config

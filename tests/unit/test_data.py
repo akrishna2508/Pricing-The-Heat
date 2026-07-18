@@ -10,7 +10,6 @@ response parsing, and both CLAUDE.md Golden Rule 5 failure modes:
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pandas as pd

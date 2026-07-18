@@ -253,9 +253,9 @@ def main() -> int:
           f"{gev['ks_critical_5pct']:.4f} -> "
           f"{'REJECTED' if gev['ks_rejects_at_5pct'] else 'not rejected'}. The daily city max "
           f"is strongly SEASONAL, so its")
-    print(f"           unconditional law is a seasonal mixture, not one GEV. GEV is the best "
-          f"available family here, not a good absolute fit; theta is re-fitted on")
-    print(f"           empirical ranks below so this misspecification cannot silently move it.")
+    print("           unconditional law is a seasonal mixture, not one GEV. GEV is the best "
+          "available family here, not a good absolute fit; theta is re-fitted on")
+    print("           empirical ranks below so this misspecification cannot silently move it.")
 
     # --- F_L: hurdle vs naive ---------------------------------------------
     hurdle = HurdleMarginal.fit(node_day["loss_hurdle"].to_numpy(), in_zero_region)
@@ -291,8 +291,8 @@ def main() -> int:
     print("[COPULA]   Gumbel, fitted by MLE on pseudo-observations (theta >= 1)")
     print(f"           TIE HANDLING: distributional transform (Rueschendorf) -- the "
           f"{hurdle.n_zero} atom observations are")
-    print(f"           spread uniformly over the CDF interval [0, p0] they occupy. Mid-ranks "
-          f"would pin all of them to")
+    print("           spread uniformly over the CDF interval [0, p0] they occupy. Mid-ranks "
+          "would pin all of them to")
     print(f"           the single value {hurdle.p0 / 2:.4f}, leaving the pseudo-observations "
           f"non-uniform and the MLE biased.")
     print(f"           theta (hurdle) = {copula.theta:.4f}  "
@@ -305,7 +305,7 @@ def main() -> int:
           f"{copula.upper_tail_dependence():.4f} "
           f"({copula.upper_tail_dependence() - copula_naive.upper_tail_dependence():+.4f}); "
           f"the naive marginal OVERSTATES tail dependence,")
-    print(f"              i.e. understates basis risk, i.e. underprices the contract.")
+    print("              i.e. understates basis risk, i.e. underprices the contract.")
     if copula.fit_hit_bound:
         print("           WARNING: theta hit the optimizer bound -- the data are effectively "
               "comonotone and theta is NOT identified.")
@@ -315,42 +315,42 @@ def main() -> int:
     theta_latent = copula.theta / attenuation
     delta_adjusted = theta_latent - copula_naive.theta
     print()
-    print(f"[DECOMPOSE] The raw delta CONFLATES two effects and must not be reported as one:")
-    print(f"           (a) atom-induced ATTENUATION: an atom destroys the ordering information "
-          f"inside it, so theta fitted on")
+    print("[DECOMPOSE] The raw delta CONFLATES two effects and must not be reported as one:")
+    print("           (a) atom-induced ATTENUATION: an atom destroys the ordering information "
+          "inside it, so theta fitted on")
     print(f"               hurdle pseudo-obs is biased toward independence. Measured by "
           f"simulation at (theta={copula.theta:.3f}, p0={hurdle.p0:.3f}):")
     print(f"               attenuation factor = {attenuation:.4f} "
           f"({(attenuation - 1) * 100:+.2f}%) -> attenuation-corrected theta_hurdle "
           f"= {theta_latent:.4f}")
-    print(f"               This is an estimand property (Genest & Neslehova 2007 "
-          f"non-identifiability under ties), NOT a code defect.")
+    print("               This is an estimand property (Genest & Neslehova 2007 "
+          "non-identifiability under ties), NOT a code defect.")
     print(f"           (b) the REAL smearing effect, net of (a): "
           f"{delta_adjusted:+.4f} ({delta_adjusted / copula_naive.theta * 100:+.2f}%)")
     if abs(delta_adjusted) < abs(theta_delta) * 0.5:
         print(f"           HONEST READING: most of the raw delta ({theta_delta:+.4f}) is the "
               f"statistical attenuation, not the smearing. The smearing's")
-        print(f"           true effect on theta is the smaller adjusted figure. Do not quote "
-              f"the raw delta as 'the cost of Prompt 3's smearing'.")
+        print("           true effect on theta is the smaller adjusted figure. Do not quote "
+              "the raw delta as 'the cost of Prompt 3's smearing'.")
     else:
-        print(f"           HONEST READING: the smearing effect survives the attenuation "
-              f"correction, so the raw delta is mostly real.")
+        print("           HONEST READING: the smearing effect survives the attenuation "
+              "correction, so the raw delta is mostly real.")
 
     # Where the smearing ACTUALLY costs: the marginal, not the dependence.
     naive_p_zero = float(naive.cdf(0.0))
     print()
-    print(f"[WHERE THE SMEARING ACTUALLY BITES] Not the copula -- the MARGINAL:")
+    print("[WHERE THE SMEARING ACTUALLY BITES] Not the copula -- the MARGINAL:")
     print(f"           P(loss is exactly 0):  hurdle = {hurdle.p0:.4f}   "
           f"naive single-piece = {naive_p_zero:.4f}")
     print(f"           The naive marginal assigns ~zero probability to a zero-loss day, when "
           f"{hurdle.p0 * 100:.1f}% of real node-days have")
-    print(f"           exactly zero cited loss. THAT is the expensive error: it drives the "
-          f"payout probability on roughly a third of all")
+    print("           exactly zero cited loss. THAT is the expensive error: it drives the "
+          "payout probability on roughly a third of all")
     print(f"           days. The dependence parameter barely moves ({delta_adjusted:+.4f} once "
           f"attenuation is netted out); the marginal moves")
     print(f"           by {hurdle.p0 - naive_p_zero:.4f} in probability. Prompt 5 must sample the "
           f"hurdle (see the recipe in this module's docstring),")
-    print(f"           or it will price a third of the calendar as if a small loss were certain.")
+    print("           or it will price a third of the calendar as if a small loss were certain.")
 
     # Robustness: empirical ranks (immune to marginal misspecification) and mid-ranks.
     theta_ranks = GumbelSurvivalCopula.fit(
@@ -360,7 +360,7 @@ def main() -> int:
         u, mid_rank_transform(node_day["loss_hurdle"].to_numpy(),
                               hurdle.cdf, hurdle.cdf_left_limit)).theta
     tau_emp = float(kendalltau(node_day["heat_index"], node_day["loss_hurdle"]).statistic)
-    print(f"           ROBUSTNESS -- what the spread does and does NOT show:")
+    print("           ROBUSTNESS -- what the spread does and does NOT show:")
     print(f"             MLE + distributional transform : {copula.theta:.4f}")
     print(f"             MLE on empirical ranks         : {theta_ranks:.4f}  (marginal-free)")
     print(f"             MLE + mid-rank ties            : {theta_midrank:.4f}")
@@ -368,16 +368,16 @@ def main() -> int:
           f"(tau_b={tau_emp:.4f}, computed on tied raw data)")
     print(f"           The first two agree to {abs(copula.theta - theta_ranks):.4f}, which is the "
           f"claim worth making: the imperfect GEV does NOT move theta,")
-    print(f"           because rank-based pseudo-obs are immune to marginal misspecification. "
-          f"The last two DIVERGE, and that is expected, not")
-    print(f"           reassuring: they handle the atom's ties differently, and under ties the "
-          f"copula is genuinely not identified. theta is")
-    print(f"           conditional on the tie convention -- so it is reported with the "
-          f"convention named, never as a bare number.")
+    print("           because rank-based pseudo-obs are immune to marginal misspecification. "
+          "The last two DIVERGE, and that is expected, not")
+    print("           reassuring: they handle the atom's ties differently, and under ties the "
+          "copula is genuinely not identified. theta is")
+    print("           conditional on the tie convention -- so it is reported with the "
+          "convention named, never as a bare number.")
     print(f"           NOTE ON INDEPENDENCE: the {len(node_day)} node-days are NOT independent "
           f"({n_nodes} nodes share each day's trigger and are")
-    print(f"           spatially correlated >0.998), so this is a composite pseudo-likelihood: "
-          f"theta is consistent but its standard error would be understated.")
+    print("           spatially correlated >0.998), so this is a composite pseudo-likelihood: "
+          "theta is consistent but its standard error would be understated.")
 
     # --- mu-TEVI series ---------------------------------------------------
     calc = TEVICalculator(gev["params_tuple"], hurdle, copula)

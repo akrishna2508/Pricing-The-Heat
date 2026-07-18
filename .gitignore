@@ -13,3 +13,6 @@ data/raw/*
 data/processed/*
 models/artifacts/*
 .pytest_cache/
+frontend/playwright-report/
+frontend/test-results/
+frontend/playwright/.cache/

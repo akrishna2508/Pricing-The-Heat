@@ -99,7 +99,9 @@ def main() -> int:
         print(f"FATAL: {MODEL_PATH} does not exist. Run `python -m models.stgcn.train` "
               f"first -- this script evaluates a frozen model, it does not train one.")
         return 1
-    checkpoint = torch.load(MODEL_PATH, weights_only=False)
+    # MODEL_PATH is a fixed, hardcoded constant read by a local CLI script
+    # (never network-reachable/attacker-influenced). See SECURITY.md.
+    checkpoint = torch.load(MODEL_PATH, weights_only=False)  # nosec B614
 
     # --- Real data, identical to train.py's loading path -------------------
     weather = load_weather()
@@ -169,7 +171,7 @@ def main() -> int:
               f"checkpoint's stored metric ({checkpoint['metrics']['heldout_mae_c']:.4f}). "
               f"Aborting -- the frozen model is not reproducing its own training-time score.")
         return 1
-    print(f"[VERIFY]   recomputed STGCN MAE matches checkpoint's stored metric exactly")
+    print("[VERIFY]   recomputed STGCN MAE matches checkpoint's stored metric exactly")
 
     # Persistence (temporal baseline), recomputed the same way train.py did, for
     # a side-by-side reference alongside the two spatial baselines below.
@@ -242,19 +244,19 @@ def main() -> int:
               f"{arr.std(axis=1).mean():.2f}C << temporal std {arr.std(axis=0).mean():.2f}C),")
         print("  so this regional grid is close to spatially flat at any instant.")
         print()
-        print(f"  DIAGNOSTIC (not a primary deliverable): same-timestep IDW has an")
-        print(f"  information asymmetry a forecaster does not have -- it sees the OTHER")
-        print(f"  nodes' TRUE readings on the exact target day, while the STGCN only ever")
-        print(f"  sees trailing history. Re-running IDW with the SAME information cutoff")
-        print(f"  as the STGCN (cross-section from the last input day, no future peek):")
+        print("  DIAGNOSTIC (not a primary deliverable): same-timestep IDW has an")
+        print("  information asymmetry a forecaster does not have -- it sees the OTHER")
+        print("  nodes' TRUE readings on the exact target day, while the STGCN only ever")
+        print("  sees trailing history. Re-running IDW with the SAME information cutoff")
+        print("  as the STGCN (cross-section from the last input day, no future peek):")
         print(f"    information-matched IDW MAE = {idw_lagged_mae:.4f} degC "
               f"-> STGCN margin = {lag_margin_pct:+.2f}%")
-        print(f"  Most of IDW's apparent edge is that information asymmetry, not superior")
-        print(f"  spatial modelling. IMPLICATION FOR PROMPT 4: mu-TEVI's spatial component")
-        print(f"  should not be oversold as 'the STGCN learned strong spatial structure' --")
-        print(f"  under the spec'd same-timestep task it loses to IDW; under an information-")
-        print(f"  matched task it is roughly on par. Either way, its edge over trivial")
-        print(f"  interpolation at these 3 held-out nodes is limited.")
+        print("  Most of IDW's apparent edge is that information asymmetry, not superior")
+        print("  spatial modelling. IMPLICATION FOR PROMPT 4: mu-TEVI's spatial component")
+        print("  should not be oversold as 'the STGCN learned strong spatial structure' --")
+        print("  under the spec'd same-timestep task it loses to IDW; under an information-")
+        print("  matched task it is roughly on par. Either way, its edge over trivial")
+        print("  interpolation at these 3 held-out nodes is limited.")
     else:
         print(f"  STGCN beats IDW by a clear margin ({idw_margin_pct:+.2f}% >= "
               f"{HONESTY_MARGIN_THRESHOLD_PCT:.0f}%) -- genuine evidence of learned "
