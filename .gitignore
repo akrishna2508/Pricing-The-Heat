@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.*.example
 __pycache__/
 node_modules/
 .venv/
@@ -13,6 +15,13 @@ data/raw/*
 data/processed/*
 models/artifacts/*
 .pytest_cache/
+
+# deploy_artifacts/ ships a fixed, small set of trained weights WITH the repo
+# so Render's build (which has no access to local artifacts) can serve the
+# API immediately -- deliberately un-ignored, unlike the *.pt/*.pkl/data
+# patterns above which stay gitignored everywhere else.
+!deploy_artifacts/
+!deploy_artifacts/**
 frontend/playwright-report/
 frontend/test-results/
 frontend/playwright/.cache/

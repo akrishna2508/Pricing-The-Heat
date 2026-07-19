@@ -22,6 +22,7 @@ transiently to resolve a city, and are never logged or persisted -- only the
 resolved city name is retained (in the in-memory policy cache and responses).
 """
 
+import os
 import uuid
 from datetime import date
 from pathlib import Path
@@ -49,11 +50,18 @@ app = FastAPI(title="Pricing the Heat", version="0.8.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# FRONTEND_ORIGIN lets the deployed Vercel frontend call this cross-origin
+# Render backend; defaults to "*" for easy first deploy, tightened later by
+# setting FRONTEND_ORIGIN to the exact Vercel URL. allow_credentials is False
+# because this app has no cookie/session auth -- that also keeps "*" a valid
+# origin value (browsers reject allow_origins=["*"] combined with
+# allow_credentials=True).
+FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=[FRONTEND_ORIGIN],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -627,3 +635,12 @@ def assistant_ask(req: AssistantAskRequest, request: Request):
     result = assistant_service.ask(req.policy_id, req.question, _policy_cache)
     return AssistantAskResponse(policy_id=req.policy_id, answer=result["answer"],
                                 source=result["source"])
+
+
+if __name__ == "__main__":
+    # Render (and most free-tier PaaS hosts) assign the listen port at
+    # runtime via $PORT and reject a hardcoded one -- default 8000 keeps
+    # `python -m backend.main` and local Docker runs unchanged.
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
