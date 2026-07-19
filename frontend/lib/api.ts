@@ -17,15 +17,34 @@ export class ApiError extends Error {
   }
 }
 
+// The backend's free-tier hosting (Render) sleeps after inactivity; the
+// first request after a sleep can take 30-60s to cold-boot. Plain fetch()
+// has no default timeout, so without this a truly-hung connection would
+// leave a page's loading spinner running forever with no error ever shown.
+// 90s comfortably exceeds a normal cold boot while still eventually
+// surfacing a visible error for a genuinely dead backend.
+const REQUEST_TIMEOUT_MS = 90_000;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let resp: Response;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     resp = await fetch(`${API_URL}${path}`, {
       ...init,
       headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+      signal: controller.signal,
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new ApiError(
+        `The pricing server at ${API_URL} took too long to respond. If this is the first ` +
+          `request in a while, the free-tier server may still be waking up -- please try again.`,
+      );
+    }
     throw new ApiError(`Couldn't reach the pricing server at ${API_URL}. Is the backend running?`);
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   let body: unknown = null;

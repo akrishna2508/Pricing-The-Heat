@@ -6,11 +6,11 @@ services:
     dockerfilePath: ./infra/backend.Dockerfile
     dockerContext: .
     healthCheckPath: /health
+    # PORT is NOT declared here -- Render injects it automatically into every
+    # web service's container at runtime; declaring it as an envVar (even
+    # with sync: false) risks Render prompting for a manual value during
+    # Blueprint deploy, which would block on a variable that's already set.
     envVars:
-      - key: PORT
-        # Render sets this itself at runtime; declared here only so it shows
-        # up in the dashboard -- do not hardcode a value.
-        sync: false
       - key: FRONTEND_ORIGIN
         value: "*"
         # Tighten this to the deployed Vercel URL (e.g.

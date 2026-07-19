@@ -147,7 +147,11 @@ export default function HeatmapPage() {
             <span className="text-gray-500"> / 100 (same across every cell)</span>
           </div>
         )}
-        {loading && <span className="text-xs text-gray-400">Loading...</span>}
+        {loading && (
+          <span className="text-xs text-gray-400">
+            Loading... (first load can take up to a minute if the server is waking up)
+          </span>
+        )}
       </div>
 
       {error && (
