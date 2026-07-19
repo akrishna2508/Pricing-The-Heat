@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: pricing-the-heat-backend
-    env: docker
-    plan: free
-    dockerfilePath: ./infra/backend.Dockerfile
+    name: pricing-heat-api
+    runtime: docker
+    plan: free            # or starter for 24/7 (free tier sleeps after inactivity)
+    dockerfilePath: infra/backend.Dockerfile
     dockerContext: .
     healthCheckPath: /health
     # PORT is NOT declared here -- Render injects it automatically into every
@@ -12,12 +12,35 @@ services:
     # Blueprint deploy, which would block on a variable that's already set.
     envVars:
       - key: FRONTEND_ORIGIN
-        value: "*"
-        # Tighten this to the deployed Vercel URL (e.g.
-        # https://pricing-the-heat.vercel.app) once the frontend is live.
+        sync: false
+        # Set to the deployed pricing-heat-web URL after its first deploy
+        # (e.g. https://pricing-heat-web.onrender.com). Until set, CORS
+        # requests from the frontend will be rejected -- this is
+        # deliberately NOT defaulted to "*" now that a real frontend service
+        # exists to point at.
       - key: ANTHROPIC_API_KEY
         sync: false
         # Optional -- /assistant/ask works via its deterministic no-key
         # fallback (backend/assistant/fallback.py) if this is left unset.
       - key: ANTHROPIC_MODEL
-        value: claude-sonnet-4-5
+        sync: false
+        # Optional -- backend/assistant/service.py's own DEFAULT_MODEL
+        # ("claude-sonnet-4-5") applies if this is left unset.
+
+  - type: web
+    name: pricing-heat-web
+    runtime: node
+    rootDir: frontend
+    plan: free            # or starter for 24/7 (free tier sleeps after inactivity)
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    # PORT is NOT declared here either -- Render injects it, and
+    # frontend/package.json's "start" script (`next start -p ${PORT:-3000}`)
+    # honors it explicitly.
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+        # Set to the deployed pricing-heat-api URL (e.g.
+        # https://pricing-heat-api.onrender.com). NEXT_PUBLIC_ vars are
+        # inlined at BUILD time, so this must be set BEFORE the first build,
+        # not just at runtime -- changing it later requires a rebuild.

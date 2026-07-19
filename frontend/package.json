@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p ${PORT:-3000}",
     "lint": "next lint",
     "test:e2e": "node e2e/fetch-replay.mjs",
     "test:e2e:playwright": "playwright test"

@@ -50,12 +50,12 @@ app = FastAPI(title="Pricing the Heat", version="0.8.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# FRONTEND_ORIGIN lets the deployed Vercel frontend call this cross-origin
-# Render backend; defaults to "*" for easy first deploy, tightened later by
-# setting FRONTEND_ORIGIN to the exact Vercel URL. allow_credentials is False
-# because this app has no cookie/session auth -- that also keeps "*" a valid
-# origin value (browsers reject allow_origins=["*"] combined with
-# allow_credentials=True).
+# FRONTEND_ORIGIN lets the deployed frontend (pricing-heat-web on Render, per
+# render.yaml) call this cross-origin backend; defaults to "*" for easy first
+# deploy, tightened later by setting FRONTEND_ORIGIN to the frontend's exact
+# URL. allow_credentials is False because this app has no cookie/session auth
+# -- that also keeps "*" a valid origin value (browsers reject
+# allow_origins=["*"] combined with allow_credentials=True).
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
 app.add_middleware(
     CORSMiddleware,
