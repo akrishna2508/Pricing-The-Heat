@@ -43,6 +43,15 @@ CITED_ZERO_THRESHOLD_C = ELASTICITY["default"]["wbgt_threshold_c"]
 # Gamma is not; the choice is made by AIC and reported, never assumed.
 POSITIVE_CANDIDATES = {"beta": stats.beta, "gamma": stats.gamma}
 
+# Minimum strictly-positive loss-days required to fit a defensible positive-loss
+# distribution. This is a DELIBERATE COVERAGE BOUNDARY, not an arbitrary crash:
+# a state with fewer than this many days above the heat-exposure elasticity
+# threshold has too little heat-exposure signal to fit F_L's positive part, so
+# it is EXCLUDED from pricing (and recorded as such in docs/STATEWISE_RESULTS.md)
+# rather than fitted on noise. Typically trips for cold-climate / high-latitude
+# / high-altitude states (e.g. US-Alaska: 22 < 30 heat-exposure days).
+MIN_POSITIVE_LOSS_DAYS = 30
+
 # Candidate families for F_H. genextreme is the theoretically motivated one for
 # block maxima; the others are here so "GEV fits best" is a measured claim.
 HEAT_CANDIDATES = {"genextreme": stats.genextreme, "gumbel_r": stats.gumbel_r,
@@ -145,8 +154,12 @@ class HurdleMarginal:
 
         p0 = float(in_zero_region.mean())
         positive = losses[~in_zero_region]
-        if len(positive) < 30:
-            raise ValueError(f"need >=30 strictly-positive losses, got {len(positive)}")
+        if len(positive) < MIN_POSITIVE_LOSS_DAYS:
+            raise ValueError(
+                f"insufficient heat-exposure days: {len(positive)} < "
+                f"{MIN_POSITIVE_LOSS_DAYS} minimum strictly-positive loss-days "
+                f"-- state EXCLUDED from pricing (deliberate coverage boundary, "
+                f"not a fittable state)")
         if np.any(positive <= 0):
             raise ValueError("positive part contains non-positive values")
 

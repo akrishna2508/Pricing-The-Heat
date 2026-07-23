@@ -98,6 +98,7 @@ from models.fusion.gumbel_copula import (
 )
 from models.fusion.marginals import (
     CITED_ZERO_THRESHOLD_C,
+    MIN_POSITIVE_LOSS_DAYS,
     HurdleMarginal,
     NaiveMarginal,
     fit_gev,
@@ -121,6 +122,7 @@ if _STATE_KEY:
     QQ_PLOT_PATH = _CTX.artifact("gev_qq.png")
     HURDLE_PLOT_PATH = _CTX.artifact("hurdle_marginal.png")
     SPATIAL_METRICS_PATH = _CTX.artifact("spatial_baseline_metrics.json")
+    EXCLUDED_PATH = _CTX.artifact("excluded.json")
 else:
     WAGE_LOSS_PATH = Path("data/processed/wage_loss.parquet")
     MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
@@ -128,6 +130,14 @@ else:
     QQ_PLOT_PATH = Path("notebooks/artifacts/gev_qq.png")
     HURDLE_PLOT_PATH = Path("notebooks/artifacts/hurdle_marginal.png")
     SPATIAL_METRICS_PATH = Path("notebooks/artifacts/spatial_baseline_metrics.json")
+    EXCLUDED_PATH = Path("models/artifacts/excluded.json")
+
+# Distinct exit code for a DELIBERATE out-of-coverage exclusion (a state with
+# too few heat-exposure days to fit a defensible wage-loss distribution), as
+# opposed to a genuine error. The pipeline still stops for this state -- there
+# is nothing downstream to price -- but it drops an excluded.json marker so the
+# state is recorded as EXCLUDED in docs/STATEWISE_RESULTS.md, never a silent gap.
+EXCLUSION_EXIT_CODE = 3
 
 # From Prompt 3: kappa/gamma are conditional on this fixed logit choice-noise
 # scale. Recorded in copula.json so downstream pricing cannot forget that the
@@ -212,6 +222,31 @@ def _load_spatial_caveat() -> str:
     )
 
 
+def _record_exclusion(reason: str, positive_days: int) -> None:
+    """Persist a durable out-of-coverage marker for this state and print a clear
+    banner. Read by backend.backtest.report --aggregate so the state appears as
+    EXCLUDED (with reason) in docs/STATEWISE_RESULTS.md rather than vanishing.
+    """
+    marker = {
+        "excluded": True,
+        "state_key": _STATE_KEY,
+        "reason": reason,
+        "positive_loss_days": positive_days,
+        "min_positive_loss_days": MIN_POSITIVE_LOSS_DAYS,
+        "stage": "models.fusion.tevi",
+        "at": pd.Timestamp.now(tz="UTC").isoformat(),
+    }
+    EXCLUDED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    EXCLUDED_PATH.write_text(json.dumps(marker, indent=2))
+    print("=" * 78)
+    print(f"EXCLUDED (out of coverage): {_STATE_KEY or '<single-city>'}")
+    print(f"  {reason}")
+    print(f"  This is a DELIBERATE coverage boundary, not an error: too little "
+          f"heat-exposure\n  signal to fit a defensible wage-loss distribution. "
+          f"Recorded to {EXCLUDED_PATH}.")
+    print("=" * 78)
+
+
 def main() -> int:
     started = time.time()
     rng = np.random.default_rng(SEED)
@@ -274,7 +309,13 @@ def main() -> int:
     print("           empirical ranks below so this misspecification cannot silently move it.")
 
     # --- F_L: hurdle vs naive ---------------------------------------------
-    hurdle = HurdleMarginal.fit(node_day["loss_hurdle"].to_numpy(), in_zero_region)
+    try:
+        hurdle = HurdleMarginal.fit(node_day["loss_hurdle"].to_numpy(), in_zero_region)
+    except ValueError as e:
+        if "insufficient heat-exposure days" in str(e):
+            _record_exclusion(str(e), int((~in_zero_region).sum()))
+            return EXCLUSION_EXIT_CODE
+        raise
     naive = NaiveMarginal.fit(node_day["loss_naive"].to_numpy())
     smeared_floor = float(node_day.loc[in_zero_region, "loss_naive"].mean())
 

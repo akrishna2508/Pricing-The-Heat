@@ -253,14 +253,26 @@ def write_statewise_results(path: Path = STATEWISE_PATH) -> int:
     for IN states, USD for US states) -- never converted, never an unlabeled mix.
     """
     from backend.state_context import all_state_keys, get_context
+    from models.fusion.marginals import MIN_POSITIVE_LOSS_DAYS
 
     keys = all_state_keys()
     rows = []
+    excluded = []
     for sk in keys:
         ctx = get_context(sk)
         cpath = ctx.artifact("contract.json")
         if not cpath.exists():
-            continue  # not yet designed -- the batch fills it in later
+            xpath = ctx.artifact("excluded.json")
+            if xpath.exists():  # deliberate out-of-coverage exclusion, recorded honestly
+                x = json.loads(xpath.read_text())
+                excluded.append({
+                    "key": sk,
+                    "state": ctx.wage_provenance().get("state", sk),
+                    "metro": ctx.metro,
+                    "reason": x.get("reason", "out of coverage"),
+                    "min_days": x.get("min_positive_loss_days"),
+                })
+            continue  # not yet designed (or excluded, captured above)
         c = json.loads(cpath.read_text())
         wages = ctx.daily_wages()
         rep_occ = "construction" if "construction" in wages else max(wages, key=wages.get)
@@ -278,7 +290,8 @@ def write_statewise_results(path: Path = STATEWISE_PATH) -> int:
     out = ["# State-wise Contract Results\n"]
     out.append(f"_Generated {pd.Timestamp.now(tz='UTC').isoformat()} from each state's "
                f"`models/artifacts/<state>/contract.json`. {len(rows)} of {len(keys)} states "
-               f"designed so far; the rest fill in as `make train-all-states` runs._\n")
+               f"designed, {len(excluded)} excluded (out of coverage); the rest fill in as "
+               f"`make train-all-states` runs._\n")
     out.append("**Frame is chosen by climate regime, never forced** (see "
                "`backend/backtest/contract_design.py`): chronic-moderate peril -> INCOME "
                "SMOOTHING; consistently-extreme peril -> rare-trigger CATASTROPHE insurance. "
@@ -305,6 +318,22 @@ def write_statewise_results(path: Path = STATEWISE_PATH) -> int:
         out.append("_No state has a chosen contract yet -- run "
                    "`STATE_KEY=<state> python -m backend.backtest.contract_design` or "
                    "`make train-all-states`._\n")
+
+    if excluded:
+        excluded.sort(key=lambda r: r["key"])
+        min_days = next((r["min_days"] for r in excluded if r["min_days"]), MIN_POSITIVE_LOSS_DAYS)
+        out.append("## Excluded states (out of coverage)\n")
+        out.append(f"{len(excluded)} state(s) are **EXCLUDED** from pricing: too few "
+                   f"heat-exposure days to fit a defensible wage-loss distribution "
+                   f"(minimum {min_days} strictly-positive loss-days). An out-of-coverage "
+                   f"state is a documented result -- listed here explicitly, never a silent "
+                   f"gap in the count.\n")
+        out.append("| State | Metro | Reason |")
+        out.append("|---|---|---|")
+        for r in excluded:
+            out.append(f"| {r['state']} (`{r['key']}`) | {r['metro']} | {r['reason']} |")
+        out.append("")
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(out) + "\n")
     print(f"[ARTIFACT] {path} ({len(rows)}/{len(keys)} states designed)")
