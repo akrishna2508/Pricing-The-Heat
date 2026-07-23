@@ -114,6 +114,7 @@ def _sensitivity_sweep(pricer_kwargs: dict) -> dict:
     loss marginal's parameters (which trace back to Prompt 3's kappa/gamma via
     the fitted Beta positive-loss distribution) cannot move it.
     """
+    from models.fusion.gumbel_copula import THETA_MIN
     from models.fusion.marginals import HurdleMarginal
     from models.pricing.lsmc_pricer import LSMCPricer
 
@@ -123,11 +124,19 @@ def _sensitivity_sweep(pricer_kwargs: dict) -> dict:
 
     theta_rows = []
     for mult in (0.7, 1.0, 1.3):
-        theta = d["theta"] * mult
+        raw_theta = d["theta"] * mult
+        # A Gumbel copula is only valid for theta >= 1 (theta=1 is independence).
+        # For near-independent states the 0.7x arm can fall below that floor;
+        # clamp to THETA_MIN rather than crash. `clamped` is surfaced in the
+        # report table so a floored theta=1.000 is never mistaken for a state
+        # that sits at independence on its own.
+        theta = max(raw_theta, THETA_MIN)
+        clamped = raw_theta < THETA_MIN
         p = LSMCPricer(theta, gev, hurdle)
         mut, loss = p.simulate_paths(30, 2000, np.random.default_rng(42))
         premium = p.price_paths(mut, loss)["premium_lsmc_fraction"]
-        theta_rows.append({"theta_multiplier": mult, "theta": theta, "premium_fraction": premium})
+        theta_rows.append({"theta_multiplier": mult, "theta": theta,
+                           "premium_fraction": premium, "clamped": clamped})
 
     kappa_gamma_rows = []
     base_pp = hurdle.positive_params
@@ -662,11 +671,12 @@ def main() -> int:
                 "mu-TEVI index is built from); the loss-marginal shape (traceable to "
                 "Prompt 3's kappa/gamma) does NOT -- verified live, not assumed: the "
                 "payout is a pure function of the index, independent of the loss draw.\n")
-    lines.append("| theta multiplier | theta | premium (wage-frac) |")
-    lines.append("|---|---|---|")
+    lines.append("| theta multiplier | theta | premium (wage-frac) | clamped to theta>=1 floor? |")
+    lines.append("|---|---|---|---|")
     for row in sensitivity["theta_sweep"]:
+        flag = "**yes -- floored at theta=1.0**" if row.get("clamped") else "no"
         lines.append(f"| {row['theta_multiplier']}x | {row['theta']:.3f} | "
-                    f"{row['premium_fraction']:.4f} |")
+                    f"{row['premium_fraction']:.4f} | {flag} |")
     lines.append("")
     lines.append("| loss-marginal (kappa/gamma proxy) multiplier | premium (wage-frac) | "
                 "mean simulated loss |")
