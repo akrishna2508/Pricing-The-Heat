@@ -1,0 +1,15 @@
+{
+  "source_url": "https://power.larc.nasa.gov/api/temporal/daily/regional",
+  "fetched_at_utc": "2026-07-23T07:38:57.195058+00:00",
+  "query_params": {
+    "parameters": "RH2M",
+    "community": "AG",
+    "longitude-min": -76.1669,
+    "longitude-max": -74.1669,
+    "latitude-min": 38.9969,
+    "latitude-max": 40.9969,
+    "start": "20160103",
+    "end": "20170102",
+    "format": "json"
+  }
+}
