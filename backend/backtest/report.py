@@ -310,10 +310,12 @@ def write_statewise_results(path: Path = STATEWISE_PATH) -> int:
             f"{r['cat_passing']} | {r['mae_impr']:+.1f}% |")
     out.append("")
     if rows:
+        from backend.backtest.contract_design import STRIKE_GRID
         n_ceiling = sum(r["ceiling"] for r in rows)
         out.append(f"**Grid-ceiling audit**: {n_ceiling} of {len(rows)} chosen strikes land on "
-                   f"STRIKE_GRID's maximum (99) -- a flagged state's true optimum may be censored "
-                   f"beyond the grid and must be reviewed before its premium is trusted.\n")
+                   f"STRIKE_GRID's maximum ({max(STRIKE_GRID):g}) -- a flagged state's true optimum "
+                   f"may be censored beyond the grid and must be reviewed before its premium is "
+                   f"trusted.\n")
     else:
         out.append("_No state has a chosen contract yet -- run "
                    "`STATE_KEY=<state> python -m backend.backtest.contract_design` or "
@@ -610,8 +612,10 @@ def main() -> int:
     lines.append("| strike | trigger | premium/cap | shortfall | overpay | rmse | MAE impr |")
     lines.append("|---|---|---|---|---|---|---|")
     for _, sr in slice_df.iterrows():
-        mark = " **<-chosen**" if int(sr["strike"]) == chosen["strike"] else ""
-        lines.append(f"| {int(sr['strike'])}{mark} | {sr['trigger_rate']:.3f} | "
+        mark = " **<-chosen**" if float(sr["strike"]) == float(chosen["strike"]) else ""
+        s = sr["strike"]
+        strike_str = f"{s:.0f}" if float(s).is_integer() else f"{s:g}"
+        lines.append(f"| {strike_str}{mark} | {sr['trigger_rate']:.3f} | "
                     f"{sr['premium_to_cap']:.3f} | {sr['shortfall_rate']:.3f} | "
                     f"{sr['overpay_rate']:.3f} | {sr['basis_risk_rmse']:.1f} | "
                     f"{sr['mae_improvement_pct']:+.1f}% |")

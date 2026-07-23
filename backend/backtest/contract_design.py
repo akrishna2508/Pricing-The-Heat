@@ -85,17 +85,21 @@ else:
 
 OCCUPATIONS = ("vendor", "construction", "delivery")
 
-# Extended to the feasibility ceiling strike=99 (strike must be < 100 or
-# payout_fraction divides by zero; mu-TEVI's real max is ~99.1, so 99 is the
-# largest strike that can EVER trigger). The hottest states (e.g. Phoenix) want
-# a strike above 95, and a grid that stopped at 95 -- or even 98 -- would
-# silently CENSOR their optimum at the boundary. Carrying the grid all the way
-# to 99 lets the sweep PROVE the optimum is interior rather than assume it: if a
-# state's chosen strike stays put when the ceiling is raised, it was a genuine
-# optimum, not a censored edge. Strikes above a state's own mu-TEVI max simply
-# never trigger (shortfall_rate->1, |bias| large) and are self-excluded, so the
-# extra high strikes are only ever chosen by states hot enough to justify them.
-STRIKE_GRID = (55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99)
+# The strike is a percentile-like threshold on the mu-TEVI index (0-100); payout
+# divides by (100-strike), so strike must stay below 100, and a strike above a
+# state's OWN mu-TEVI max never triggers (self-excluded). mu-TEVI's max is NOT a
+# global constant: Phoenix/US-Arizona tops out at ~99.1 (so its optimum is
+# interior at 98), but heat-concentrated states like California (max ~99.93) and
+# Colorado (max ~99.92) carry real exceedance mass ABOVE integer strike 99 -- an
+# integer-only grid ending at 99 silently CENSORS their optimum at the edge. The
+# grid therefore carries FRACTIONAL strikes up to 99.9 (still below both those
+# maxima, so they can trigger) to let the sweep PROVE the optimum is interior
+# rather than assume it: if a state's chosen strike stays put when the ceiling is
+# raised, it was a genuine optimum. Strikes above a state's own mu-TEVI max never
+# trigger (shortfall_rate->1, |bias| large) and are self-excluded, so the
+# extended grid is self-selecting -- colder states never choose the high strikes.
+STRIKE_GRID = (55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99,
+               99.2, 99.4, 99.5, 99.6, 99.7, 99.8, 99.9, 99.95, 99.99)
 WINDOW_GRID = (14, 30, 60, 90)
 PRICE_PATHS = 1500  # MC paths per grid point for the premium (laptop-scoped).
 
@@ -157,6 +161,15 @@ def sweep(city_index: pd.DataFrame, actual_loss_daily: pd.DataFrame, wages: dict
                 if triggered:
                     n_claim_events += n_workers  # one claim per worker in a triggering window
             realized = np.array(realized)
+
+            # Self-exclusion (not a crash): a strike above this state's own mu-TEVI
+            # max never triggers, so realized is all-zero and there is nothing to
+            # score -- skip the grid point. This is what makes the extended
+            # high-strike grid safe for milder states: they simply never reach the
+            # top strikes, and those points prune themselves instead of raising
+            # "no observations in the scored sample" from m.mae below.
+            if not any(triggered_flags):
+                continue
 
             # Climatological premium for THIS strike/window (LSMC, frozen model).
             pricer = LSMCPricer.from_copula_json(strike=strike, cap=cap)
@@ -252,7 +265,10 @@ def select_contract(sweep_df: pd.DataFrame) -> dict:
     return {
         "frame": frame,
         "is_catastrophe_insurance": frame == "catastrophe_insurance",
-        "strike": int(chosen["strike"]),
+        # float, NOT int: the grid carries fractional strikes (e.g. 99.7) for
+        # heat-concentrated states. Truncating here would desync the reported
+        # strike from the chosen row's economics and misprice the replay.
+        "strike": float(chosen["strike"]),
         "window": int(chosen["window"]),
         "row": {k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
                 for k, v in chosen.to_dict().items()},
@@ -352,7 +368,7 @@ def run_design_pass(persist_table: bool = True) -> dict:
     if CONTRACT_PATH is not None:
         r = chosen["row"]
         payload = {
-            "strike": int(chosen["strike"]),
+            "strike": float(chosen["strike"]),  # may be fractional (e.g. 99.7) for hot states
             "window_days": int(chosen["window"]),
             "product_type": chosen["frame"],
             "frame": chosen["frame"],
@@ -366,7 +382,7 @@ def run_design_pass(persist_table: bool = True) -> dict:
             # Honest flag: the chosen strike sits at the top of STRIKE_GRID, so
             # the true unbiased optimum may lie beyond it (a censored boundary
             # optimum). Reported, never hidden -- the batch runner surfaces it.
-            "strike_at_grid_ceiling": int(chosen["strike"]) == max(STRIKE_GRID),
+            "strike_at_grid_ceiling": float(chosen["strike"]) == float(max(STRIKE_GRID)),
         }
         CONTRACT_PATH.parent.mkdir(parents=True, exist_ok=True)
         CONTRACT_PATH.write_text(json.dumps(payload, indent=2) + "\n")
@@ -395,7 +411,7 @@ def main() -> int:
     r = chosen["row"]
     print(f"[CHOSEN]   frame={chosen['frame']} | strike={chosen['strike']} "
           f"window={chosen['window']}d")
-    if int(chosen["strike"]) == max(STRIKE_GRID):
+    if float(chosen["strike"]) == float(max(STRIKE_GRID)):
         print(f"[BOUNDARY] WARNING: chosen strike {chosen['strike']} is the grid ceiling "
               f"({max(STRIKE_GRID)}); this state's true optimum may be censored -- "
               f"reported, not hidden.")

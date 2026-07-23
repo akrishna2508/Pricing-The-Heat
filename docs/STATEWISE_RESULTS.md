@@ -1,6 +1,6 @@
 # State-wise Contract Results
 
-_Generated 2026-07-23T08:23:56.478005+00:00 from each state's `models/artifacts/<state>/contract.json`. 78 of 79 states designed, 1 excluded (out of coverage); the rest fill in as `make train-all-states` runs._
+_Generated 2026-07-23T14:51:26.468756+00:00 from each state's `models/artifacts/<state>/contract.json`. 78 of 79 states designed, 1 excluded (out of coverage); the rest fill in as `make train-all-states` runs._
 
 **Frame is chosen by climate regime, never forced** (see `backend/backtest/contract_design.py`): chronic-moderate peril -> INCOME SMOOTHING; consistently-extreme peril -> rare-trigger CATASTROPHE insurance. Premium is the LSMC fair-value premium (`premium_to_cap * cap * representative daily wage`), each **in that state's own currency -- never converted, never mixed unlabeled**.
 
@@ -37,55 +37,55 @@ _Generated 2026-07-23T08:23:56.478005+00:00 from each state's `models/artifacts/
 | Alabama (`US-Alabama`) | Birmingham | **income smoothing** | 90 | 14d | no | 30.80 USD (construction) | 0.474 | 0 | +38.8% |
 | Arizona (`US-Arizona`) | Phoenix | **catastrophe insurance** | 98 | 14d | no | 27.21 USD (construction) | 0.212 | 3 | +44.5% |
 | Arkansas (`US-Arkansas`) | Little Rock | **income smoothing** | 90 | 14d | no | 48.98 USD (construction) | 0.475 | 0 | +39.1% |
-| California (`US-California`) | Los Angeles | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 22.44 USD (construction) | 0.152 | 1 | +16.6% |
-| Colorado (`US-Colorado`) | Denver | **income smoothing** | 99 | 14d | ⚠️ **YES** | 28.27 USD (construction) | 0.219 | 0 | -6.1% |
-| Connecticut (`US-Connecticut`) | Bridgeport | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 19.38 USD (construction) | 0.128 | 2 | +20.2% |
-| Delaware (`US-Delaware`) | Wilmington | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 13.71 USD (construction) | 0.115 | 2 | +23.5% |
-| District of Columbia (`US-District of Columbia`) | Washington,  D.C. | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 18.20 USD (construction) | 0.110 | 2 | +17.8% |
+| California (`US-California`) | Los Angeles | **catastrophe insurance** | 99.0 | 14d | no | 22.44 USD (construction) | 0.152 | 22 | +16.6% |
+| Colorado (`US-Colorado`) | Denver | **catastrophe insurance** | 99.7 | 14d | no | 10.25 USD (construction) | 0.079 | 7 | +8.9% |
+| Connecticut (`US-Connecticut`) | Bridgeport | **catastrophe insurance** | 99.0 | 14d | no | 19.38 USD (construction) | 0.128 | 26 | +20.2% |
+| Delaware (`US-Delaware`) | Wilmington | **catastrophe insurance** | 99.0 | 14d | no | 13.71 USD (construction) | 0.115 | 23 | +23.5% |
+| District of Columbia (`US-District of Columbia`) | Washington,  D.C. | **catastrophe insurance** | 99.0 | 14d | no | 18.20 USD (construction) | 0.110 | 31 | +17.8% |
 | Florida (`US-Florida`) | Miami | **income smoothing** | 65 | 14d | no | 79.15 USD (construction) | 0.679 | 0 | +29.3% |
 | Georgia (`US-Georgia`) | Atlanta | **income smoothing** | 90 | 14d | no | 31.44 USD (construction) | 0.484 | 0 | +41.2% |
 | Hawaii (`US-Hawaii`) | Honolulu | **income smoothing** | 65 | 14d | no | 86.16 USD (construction) | 0.687 | 0 | +26.4% |
-| Idaho (`US-Idaho`) | Boise | **income smoothing** | 99 | 14d | ⚠️ **YES** | 12.49 USD (construction) | 0.192 | 0 | +16.1% |
-| Illinois (`US-Illinois`) | Chicago | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 16.32 USD (construction) | 0.130 | 1 | +13.4% |
-| Indiana (`US-Indiana`) | Indianapolis | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 15.42 USD (construction) | 0.237 | 1 | +32.3% |
-| Iowa (`US-Iowa`) | Des Moines | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 16.65 USD (construction) | 0.256 | 1 | +32.6% |
+| Idaho (`US-Idaho`) | Boise | **catastrophe insurance** | 99.5 | 14d | no | 7.04 USD (construction) | 0.108 | 18 | +19.3% |
+| Illinois (`US-Illinois`) | Chicago | **catastrophe insurance** | 99.0 | 14d | no | 16.32 USD (construction) | 0.130 | 25 | +13.4% |
+| Indiana (`US-Indiana`) | Indianapolis | **catastrophe insurance** | 99.0 | 14d | no | 15.42 USD (construction) | 0.237 | 24 | +32.3% |
+| Iowa (`US-Iowa`) | Des Moines | **catastrophe insurance** | 99.0 | 14d | no | 16.65 USD (construction) | 0.256 | 23 | +32.6% |
 | Kansas (`US-Kansas`) | Kansas City | **catastrophe insurance** | 98 | 14d | no | 12.21 USD (construction) | 0.188 | 3 | +21.2% |
-| Kentucky (`US-Kentucky`) | Louisville | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 7.08 USD (construction) | 0.109 | 2 | +10.9% |
+| Kentucky (`US-Kentucky`) | Louisville | **catastrophe insurance** | 99.0 | 14d | no | 7.08 USD (construction) | 0.109 | 34 | +10.9% |
 | Louisiana (`US-Louisiana`) | New Orleans | **income smoothing** | 80 | 14d | no | 39.27 USD (construction) | 0.604 | 0 | +41.6% |
-| Maine (`US-Maine`) | Lewiston | **income smoothing** | 99 | 14d | ⚠️ **YES** | 21.14 USD (construction) | 0.167 | 0 | +15.6% |
-| Maryland (`US-Maryland`) | Baltimore | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 15.32 USD (construction) | 0.114 | 2 | +19.1% |
-| Massachusetts (`US-Massachusetts`) | Boston | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 18.59 USD (construction) | 0.138 | 1 | +19.4% |
-| Michigan (`US-Michigan`) | Detroit | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 12.33 USD (construction) | 0.133 | 1 | +13.1% |
-| Minnesota (`US-Minnesota`) | Minneapolis | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 14.04 USD (construction) | 0.141 | 1 | +11.5% |
+| Maine (`US-Maine`) | Lewiston | **catastrophe insurance** | 99.2 | 14d | no | 17.63 USD (construction) | 0.139 | 15 | +15.1% |
+| Maryland (`US-Maryland`) | Baltimore | **catastrophe insurance** | 99.0 | 14d | no | 15.32 USD (construction) | 0.114 | 23 | +19.1% |
+| Massachusetts (`US-Massachusetts`) | Boston | **catastrophe insurance** | 99.0 | 14d | no | 18.59 USD (construction) | 0.138 | 24 | +19.4% |
+| Michigan (`US-Michigan`) | Detroit | **catastrophe insurance** | 99.0 | 14d | no | 12.33 USD (construction) | 0.133 | 24 | +13.1% |
+| Minnesota (`US-Minnesota`) | Minneapolis | **catastrophe insurance** | 99.0 | 14d | no | 14.04 USD (construction) | 0.141 | 25 | +11.5% |
 | Mississippi (`US-Mississippi`) | Jackson | **income smoothing** | 85 | 14d | no | 35.59 USD (construction) | 0.548 | 0 | +50.0% |
 | Missouri (`US-Missouri`) | St. Louis | **catastrophe insurance** | 98 | 14d | no | 21.70 USD (construction) | 0.186 | 2 | +20.5% |
-| Montana (`US-Montana`) | Billings | **income smoothing** | 99 | 14d | ⚠️ **YES** | 18.24 USD (construction) | 0.198 | 0 | +9.8% |
-| Nebraska (`US-Nebraska`) | Omaha | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 12.78 USD (construction) | 0.119 | 1 | +13.6% |
+| Montana (`US-Montana`) | Billings | **catastrophe insurance** | 99.6 | 14d | no | 8.47 USD (construction) | 0.092 | 14 | +9.5% |
+| Nebraska (`US-Nebraska`) | Omaha | **catastrophe insurance** | 99.0 | 14d | no | 12.78 USD (construction) | 0.119 | 20 | +13.6% |
 | Nevada (`US-Nevada`) | Las Vegas | **catastrophe insurance** | 98 | 14d | no | 22.57 USD (construction) | 0.224 | 3 | +38.9% |
-| New Hampshire (`US-New Hampshire`) | Manchester | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 9.56 USD (construction) | 0.147 | 1 | +17.5% |
-| New Jersey (`US-New Jersey`) | Trenton | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 16.43 USD (construction) | 0.121 | 2 | +19.2% |
-| New Mexico (`US-New Mexico`) | Albuquerque | **income smoothing** | 99 | 14d | ⚠️ **YES** | 20.86 USD (construction) | 0.202 | 0 | +15.4% |
-| New York (`US-New York`) | Buffalo | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 21.06 USD (construction) | 0.147 | 1 | +17.3% |
+| New Hampshire (`US-New Hampshire`) | Manchester | **catastrophe insurance** | 99.0 | 14d | no | 9.56 USD (construction) | 0.147 | 23 | +17.5% |
+| New Jersey (`US-New Jersey`) | Trenton | **catastrophe insurance** | 99.0 | 14d | no | 16.43 USD (construction) | 0.121 | 21 | +19.2% |
+| New Mexico (`US-New Mexico`) | Albuquerque | **catastrophe insurance** | 99.5 | 14d | no | 11.78 USD (construction) | 0.114 | 13 | +16.6% |
+| New York (`US-New York`) | Buffalo | **catastrophe insurance** | 99.0 | 14d | no | 21.06 USD (construction) | 0.147 | 25 | +17.3% |
 | North Carolina (`US-North Carolina`) | Raleigh | **income smoothing** | 90 | 14d | no | 31.56 USD (construction) | 0.486 | 0 | +42.3% |
-| North Dakota (`US-North Dakota`) | Fargo | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 16.69 USD (construction) | 0.257 | 1 | +30.5% |
-| Ohio (`US-Ohio`) | Cleveland | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 22.71 USD (construction) | 0.243 | 1 | +36.1% |
+| North Dakota (`US-North Dakota`) | Fargo | **catastrophe insurance** | 99.0 | 14d | no | 16.69 USD (construction) | 0.257 | 23 | +30.5% |
+| Ohio (`US-Ohio`) | Cleveland | **catastrophe insurance** | 99.0 | 14d | no | 22.71 USD (construction) | 0.243 | 24 | +36.1% |
 | Oklahoma (`US-Oklahoma`) | Tulsa | **income smoothing** | 90 | 14d | no | 31.36 USD (construction) | 0.483 | 0 | +39.4% |
-| Oregon (`US-Oregon`) | Portland | **income smoothing** | 99 | 14d | ⚠️ **YES** | 29.70 USD (construction) | 0.220 | 0 | -21.8% |
-| Pennsylvania (`US-Pennsylvania`) | Philadelphia | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 7.75 USD (construction) | 0.119 | 2 | +26.5% |
-| Rhode Island (`US-Rhode Island`) | Providence | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 19.33 USD (construction) | 0.135 | 2 | +18.7% |
+| Oregon (`US-Oregon`) | Portland | **catastrophe insurance** | 99.9 | 14d | no | 4.18 USD (construction) | 0.031 | 11 | +2.6% |
+| Pennsylvania (`US-Pennsylvania`) | Philadelphia | **catastrophe insurance** | 99.0 | 14d | no | 7.75 USD (construction) | 0.119 | 23 | +26.5% |
+| Rhode Island (`US-Rhode Island`) | Providence | **catastrophe insurance** | 99.0 | 14d | no | 19.33 USD (construction) | 0.135 | 26 | +18.7% |
 | South Carolina (`US-South Carolina`) | Charleston | **income smoothing** | 85 | 14d | no | 35.41 USD (construction) | 0.545 | 0 | +41.2% |
-| South Dakota (`US-South Dakota`) | Sioux Falls | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 25.62 USD (construction) | 0.255 | 1 | +29.6% |
+| South Dakota (`US-South Dakota`) | Sioux Falls | **catastrophe insurance** | 99.0 | 14d | no | 25.62 USD (construction) | 0.255 | 23 | +29.6% |
 | Tennessee (`US-Tennessee`) | Memphis | **income smoothing** | 90 | 14d | no | 30.79 USD (construction) | 0.474 | 0 | +36.7% |
 | Texas (`US-Texas`) | Houston | **income smoothing** | 80 | 14d | no | 38.85 USD (construction) | 0.598 | 0 | +47.5% |
-| Utah (`US-Utah`) | Salt Lake City | **income smoothing** | 99 | 14d | ⚠️ **YES** | 13.15 USD (construction) | 0.202 | 0 | +16.7% |
-| Vermont (`US-Vermont`) | Burlington | **income smoothing** | 99 | 14d | ⚠️ **YES** | 19.44 USD (construction) | 0.159 | 0 | +13.9% |
+| Utah (`US-Utah`) | Salt Lake City | **catastrophe insurance** | 99.5 | 14d | no | 7.40 USD (construction) | 0.114 | 9 | +21.5% |
+| Vermont (`US-Vermont`) | Burlington | **catastrophe insurance** | 99.2 | 14d | no | 16.28 USD (construction) | 0.133 | 20 | +12.5% |
 | Virginia (`US-Virginia`) | Virginia Beach | **income smoothing** | 90 | 14d | no | 52.01 USD (construction) | 0.484 | 0 | +39.8% |
-| Washington (`US-Washington`) | Seattle | **income smoothing** | 99 | 14d | ⚠️ **YES** | 36.22 USD (construction) | 0.236 | 0 | -117.5% |
-| West Virginia (`US-West Virginia`) | Charleston | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 9.14 USD (construction) | 0.117 | 2 | +15.1% |
-| Wisconsin (`US-Wisconsin`) | Milwaukee | **catastrophe insurance** | 99 | 14d | ⚠️ **YES** | 9.32 USD (construction) | 0.143 | 1 | +13.1% |
-| Wyoming (`US-Wyoming`) | Cheyenne | **income smoothing** | 99 | 14d | ⚠️ **YES** | 13.75 USD (construction) | 0.212 | 0 | +2.2% |
+| Washington (`US-Washington`) | Seattle | **catastrophe insurance** | 99.9 | 14d | no | 4.99 USD (construction) | 0.033 | 10 | +3.0% |
+| West Virginia (`US-West Virginia`) | Charleston | **catastrophe insurance** | 99.0 | 14d | no | 9.14 USD (construction) | 0.117 | 30 | +15.1% |
+| Wisconsin (`US-Wisconsin`) | Milwaukee | **catastrophe insurance** | 99.0 | 14d | no | 9.32 USD (construction) | 0.143 | 22 | +13.1% |
+| Wyoming (`US-Wyoming`) | Cheyenne | **catastrophe insurance** | 99.7 | 14d | no | 5.04 USD (construction) | 0.078 | 8 | +12.3% |
 
-**Grid-ceiling audit**: 33 of 78 chosen strikes land on STRIKE_GRID's maximum (99) -- a flagged state's true optimum may be censored beyond the grid and must be reviewed before its premium is trusted.
+**Grid-ceiling audit**: 0 of 78 chosen strikes land on STRIKE_GRID's maximum (99.99) -- a flagged state's true optimum may be censored beyond the grid and must be reviewed before its premium is trusted.
 
 ## Excluded states (out of coverage)
 

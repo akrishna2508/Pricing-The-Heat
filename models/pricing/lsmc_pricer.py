@@ -355,7 +355,7 @@ def main() -> int:
     pricer = LSMCPricer.from_copula_json()
     print(f"[MODEL]    theta={pricer.copula.theta:.4f} "
           f"(lambda_U={pricer.copula.upper_tail_dependence():.4f}, copula tail dependence)")
-    print(f"[CONTRACT] one-shot Bermudan claim | strike={pricer.strike:.0f} mu-TEVI | "
+    print(f"[CONTRACT] one-shot Bermudan claim | strike={pricer.strike:g} mu-TEVI | "
           f"payout=cap*(index-strike)+/(100-strike), cap={pricer.cap:.2f} wage")
     print(f"[HURDLE]   F_L p0={pricer.hurdle.p0:.4f} ({pricer.hurdle.positive_dist}); "
           f"simulated zero-fraction is asserted within {ZERO_FRACTION_TOL} of p0")

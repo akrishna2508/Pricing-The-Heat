@@ -282,7 +282,7 @@ def main() -> int:
     n_windows = result["n_windows"]
     n_triggered = int(result["window_summary"].drop_duplicates("window_id")["triggered"].sum())
     print(f"[REPLAY]   {n_windows} non-overlapping {result['window_days']}-day windows | "
-          f"strike={result['strike']:.0f} cap={result['cap']:.2f}")
+          f"strike={result['strike']:g} cap={result['cap']:.2f}")
     print(f"[TRIGGER]  {n_triggered}/{n_windows} windows triggered "
           f"({n_triggered / n_windows * 100:.1f}%)")
     print(f"[CLAIMS]   {len(result['claims'])} claim rows -> data/processed/claims.parquet")
