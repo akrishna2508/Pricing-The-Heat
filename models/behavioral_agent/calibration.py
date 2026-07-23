@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -69,9 +70,22 @@ from models.stgcn.train import load_weather
 
 SEED = 42
 
-CALIBRATION_PATH = Path("models/artifacts/calibration.json")
-WAGE_LOSS_PATH = Path("data/processed/wage_loss.parquet")
-PLOT_PATH = Path("notebooks/artifacts/calibration_residuals.png")
+# Per-state namespacing (v2): STATE_KEY set -> this state's namespaced I/O and
+# its OWN legislated wage schedule (USD for US states, INR for IN states, never
+# converted). Unset -> legacy single-city path unchanged. See backend/state_context.
+STATE_KEY = os.environ.get("STATE_KEY")
+if STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(STATE_KEY)
+    CALIBRATION_PATH = _CTX.artifact("calibration.json")
+    WAGE_LOSS_PATH = _CTX.processed("wage_loss.parquet")
+    PLOT_PATH = _CTX.artifact("calibration_residuals.png")
+else:
+    _CTX = None
+    CALIBRATION_PATH = Path("models/artifacts/calibration.json")
+    WAGE_LOSS_PATH = Path("data/processed/wage_loss.parquet")
+    PLOT_PATH = Path("notebooks/artifacts/calibration_residuals.png")
 
 # Logit choice-noise scale, as a fraction of one daily wage. FIXED, not fitted --
 # see the module docstring on identifiability. 0.10 is chosen because it keeps
@@ -226,12 +240,18 @@ def main() -> int:
     heat_matrix = pivot.to_numpy()
     h_flat = heat_matrix.reshape(-1)
 
-    with open(CITIES_YAML_PATH) as f:
-        config = yaml.safe_load(f)
-    city_key = config["default_city"]
-    loader = WageLoader(country_iso3=config["cities"][city_key]["country_iso3"])
-    wages = loader.occupation_baseline_wages(city_key=city_key)
+    if _CTX is not None:
+        wages = _CTX.daily_wages()          # this state's own wage schedule + currency
+        wage_currency = _CTX.currency
+    else:
+        with open(CITIES_YAML_PATH) as f:
+            config = yaml.safe_load(f)
+        city_key = config["default_city"]
+        loader = WageLoader(country_iso3=config["cities"][city_key]["country_iso3"])
+        wages = loader.occupation_baseline_wages(city_key=city_key)
+        wage_currency = "INR"
     overrides = SurveyDataLoader().load_overrides()
+    print(f"[WAGE]     baseline daily wages ({wage_currency}): {wages}")
 
     print(f"[REAL API] NASA POWER shade-WBGT: {len(h_flat)} real node-days, "
           f"mean={h_flat.mean():.2f}C sd={h_flat.std():.2f}C "

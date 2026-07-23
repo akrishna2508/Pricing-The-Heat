@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -36,8 +37,22 @@ from models.stgcn.train import load_weather
 
 SEED = 42
 
-POLICY_PATH = Path("models/artifacts/ppo_policy.pt")
-PLOT_PATH = Path("notebooks/artifacts/ppo_reward.png")
+# Per-state namespacing (v2): STATE_KEY set -> this state's policy/plot and its
+# OWN wage schedule + currency (the POMDP reward is wage vs heat-cost, so the
+# wages MUST be this state's, never Ahmedabad's). Unset -> legacy paths, {CCY}.
+STATE_KEY = os.environ.get("STATE_KEY")
+if STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(STATE_KEY)
+    POLICY_PATH = _CTX.artifact("ppo_policy.pt")
+    PLOT_PATH = _CTX.artifact("ppo_reward.png")
+    CCY = _CTX.currency
+else:
+    _CTX = None
+    POLICY_PATH = Path("models/artifacts/ppo_policy.pt")
+    PLOT_PATH = Path("notebooks/artifacts/ppo_reward.png")
+    CCY = "INR"
 
 HIDDEN = 32
 MAX_ITERS = 200
@@ -210,7 +225,7 @@ def collect_rollout(env: WorkerEnv, model: ActorCritic, n_episodes: int, reward_
 
 
 def rollout_fixed(env: WorkerEnv, policy_fn, n_episodes: int, base_seed: int):
-    """Run a policy over a FIXED set of episodes -> (mean return INR, work rate).
+    """Run a policy over a FIXED set of episodes -> (mean return {CCY}, work rate).
 
     WHY THIS EXISTS: the training return is measured on freshly sampled 30-day
     windows, so it swings by thousands of rupees between iterations purely
@@ -283,14 +298,17 @@ def main() -> int:
     heat_matrix = (
         weather.pivot(index="date", columns="node_id", values="wbgt_c").sort_index().to_numpy()
     )
-    with open(CITIES_YAML_PATH) as f:
-        config = yaml.safe_load(f)
-    city_key = config["default_city"]
-    wages = WageLoader(country_iso3=config["cities"][city_key]["country_iso3"]) \
-        .occupation_baseline_wages(city_key=city_key)
+    if _CTX is not None:
+        wages = _CTX.daily_wages()   # this state's own schedule, in its own currency
+    else:
+        with open(CITIES_YAML_PATH) as f:
+            config = yaml.safe_load(f)
+        city_key = config["default_city"]
+        wages = WageLoader(country_iso3=config["cities"][city_key]["country_iso3"]) \
+            .occupation_baseline_wages(city_key=city_key)
     print(f"[REAL API] NASA POWER shade-WBGT: {heat_matrix.shape[0]} days x "
           f"{heat_matrix.shape[1]} nodes | episodes draw real 30-day windows")
-    print(f"[CITED]    baseline daily wages (INR): "
+    print(f"[CITED]    baseline daily wages ({CCY}): "
           f"{ {k: round(v, 1) for k, v in wages.items()} }")
 
     params = None
@@ -334,9 +352,9 @@ def main() -> int:
         eval_env, always_work_policy, EVAL_EPISODES, EVAL_SEED_BASE)
     print(f"[EVAL]     {EVAL_EPISODES} fixed episodes (identical weather every iteration)")
     print(f"           oracle (true-heat threshold, myopic optimum): "
-          f"{oracle_return:8.2f} INR  work_rate={oracle_work:.3f}")
+          f"{oracle_return:8.2f} {CCY}  work_rate={oracle_work:.3f}")
     print(f"           naive  (always work)                        : "
-          f"{naive_return:8.2f} INR  work_rate={naive_work:.3f}")
+          f"{naive_return:8.2f} {CCY}  work_rate={naive_work:.3f}")
 
     history: list[dict] = []
     best_return, best_iter, no_improve = -np.inf, 0, 0
@@ -403,7 +421,7 @@ def main() -> int:
             no_improve += 1
 
         if iteration % 10 == 0 or iteration == 1:
-            print(f"  iter {iteration:3d}/{args.iters}  eval={eval_return:8.2f} INR "
+            print(f"  iter {iteration:3d}/{args.iters}  eval={eval_return:8.2f} {CCY} "
                   f"({eval_return / oracle_return * 100:5.1f}% of oracle)  "
                   f"work={eval_work:.3f}  train={mean_return:8.2f}  "
                   f"pi={last_losses['pi']:+.4f} v={last_losses['v']:.4f} "
@@ -416,13 +434,13 @@ def main() -> int:
 
     model.load_state_dict(best_state)
     print("=" * 72)
-    print(f"[BEST]     iter {best_iter}: eval return={best_return:.2f} INR over "
+    print(f"[BEST]     iter {best_iter}: eval return={best_return:.2f} {CCY} over "
           f"{EPISODE_LEN} days (weights restored)")
-    print(f"           oracle (myopic optimum, sees TRUE heat) : {oracle_return:8.2f} INR")
-    print(f"           PPO    (sees heat through POMDP noise)  : {best_return:8.2f} INR "
+    print(f"           oracle (myopic optimum, sees TRUE heat) : {oracle_return:8.2f} {CCY}")
+    print(f"           PPO    (sees heat through POMDP noise)  : {best_return:8.2f} {CCY} "
           f"({best_return / oracle_return * 100:.1f}% of oracle)")
-    print(f"           naive  (always work)                    : {naive_return:8.2f} INR")
-    print(f"           oracle - PPO = {oracle_return - best_return:.2f} INR: "
+    print(f"           naive  (always work)                    : {naive_return:8.2f} {CCY}")
+    print(f"           oracle - PPO = {oracle_return - best_return:.2f} {CCY}: "
           f"the price of partial observability")
     if best_return <= naive_return:
         print("           WARNING: PPO did not beat the always-work baseline.")
@@ -464,7 +482,7 @@ def _plot(history, best_iter, best_return, oracle_return, oracle_work, naive_ret
                             (naive_return, "#adb5bd", f"always work ({naive_return:.0f})")):
         ax1.axhline(y, ls="--", c=color, lw=1.2, label=label)
     ax1.axvline(best_iter, ls=":", c="grey", lw=1, label=f"best iter ({best_iter})")
-    ax1.set(xlabel="PPO iteration", ylabel=f"mean episode return (INR / {EPISODE_LEN}d)",
+    ax1.set(xlabel="PPO iteration", ylabel=f"mean episode return ({CCY} / {EPISODE_LEN}d)",
             title=f"Learning curve -- {best_return / oracle_return * 100:.1f}% of oracle")
 
     ax2.plot(it, [h["eval_work_rate"] for h in history], color="#2a9d8f", lw=1.4,

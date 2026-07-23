@@ -1,4 +1,4 @@
-.PHONY: install data train backtest reproduce test up down logs clean help
+.PHONY: install data train backtest reproduce train-all-states test up down logs clean help
 
 help:
 	@echo "Pricing the Heat - Available targets:"
@@ -70,3 +70,10 @@ clean:
 	find . -type f -name "*.pyc" -delete
 	rm -rf .pytest_cache
 	@echo "Cleaned build artifacts"
+
+# Resumable per-state batch (all states in config/wages_by_state.yaml). Pins
+# .venv/bin/python explicitly so the canonical interpreter is inherited by every
+# stage subprocess (never a bare python/python3 off PATH). Pass flags via ARGS:
+#   make train-all-states ARGS="--states US-Arizona,IN-Assam --fail-fast"
+train-all-states:
+	PYTHONPATH=. .venv/bin/python -m backend.batch.train_all_states $(ARGS)

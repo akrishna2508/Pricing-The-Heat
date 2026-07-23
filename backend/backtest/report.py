@@ -7,6 +7,9 @@ is hardcoded -- per CLAUDE.md Golden Rule 5/9 and this prompt's DoD.
 
 from __future__ import annotations
 
+import argparse
+import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -32,8 +35,26 @@ from models.pricing.basis_risk import DegenerateBasisRiskError
 from models.pricing.lsmc_pricer import payout_fraction
 from models.stgcn.train import load_weather, to_node_time_matrix
 
-REPORT_PATH = Path("notebooks/artifacts/backtest_report.md")
-FIGURES_DIR = Path("data/exports/poster_figures")
+# Per-state namespacing (v2): STATE_KEY set -> this state's report/figures and
+# its own currency label. Unset -> legacy single-city paths, {CCY}. The replay
+# (historical_replay) is already STATE_KEY-aware, so claims.parquet lands in the
+# right place; this file namespaces its OWN outputs + labels only.
+STATE_KEY = os.environ.get("STATE_KEY")
+if STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(STATE_KEY)
+    REPORT_PATH = _CTX.artifact("backtest_report.md")
+    FIGURES_DIR = _CTX.artifacts_dir / "poster_figures"
+    CCY = _CTX.currency
+else:
+    _CTX = None
+    REPORT_PATH = Path("notebooks/artifacts/backtest_report.md")
+    FIGURES_DIR = Path("data/exports/poster_figures")
+    CCY = "INR"
+
+# Cross-state aggregation output (repo doc, not per-state) -- see write_statewise_results.
+STATEWISE_PATH = Path("docs/STATEWISE_RESULTS.md")
 DPI = 300
 
 CONTRACT_HEALTH_TRIGGER_THRESHOLD = 0.60  # "pathologically high" per the prompt
@@ -42,19 +63,35 @@ CONTRACT_HEALTH_SHORTFALL_THRESHOLD = 0.30
 
 def _mode_b_proxy_rate() -> dict:
     """Re-derive the REAL MODE B proxy rate live (never hardcoded/stale)."""
-    with open(CITIES_YAML_PATH) as f:
-        config = yaml.safe_load(f)
-    city = config["cities"][config["default_city"]]
+    if _CTX is not None:
+        bbox = _CTX.bbox
+        country_iso3 = {"US": "USA", "IN": "IND"}.get(_CTX.country, _CTX.country)
+    else:
+        with open(CITIES_YAML_PATH) as f:
+            config = yaml.safe_load(f)
+        city = config["cities"][config["default_city"]]
+        bbox = city["bbox"]
+        country_iso3 = city["country_iso3"]
 
-    weather_loader = WeatherLoader(bbox=city["bbox"])
+    weather_loader = WeatherLoader(bbox=bbox)
     raw = weather_loader.fetch_daily()
     filled, weather_proxies = weather_loader.fill_gaps(raw)
     weather_cells = len(filled) * 2
 
-    wage_loader = WageLoader(country_iso3=city["country_iso3"])
-    wb = wage_loader.fetch_worldbank(["SL.EMP.WORK.ZS"])
-    wage_cells = len(wb) if not wb.empty else 0
-    wage_proxies = len(wage_loader.last_gap_proxies)
+    # World Bank labor-structure is supplementary PROVENANCE, never a pricing
+    # input (STGCN/PPO/copula/pricing don't touch it). Golden Rule 5's hard-stop
+    # is for pricing-critical fetches; this context fetch must NOT fail the whole
+    # state. fetch_worldbank escalates an unreachable source to MODE A (fatal_abort
+    # -> SystemExit), so catch that too -- record WB unavailable and continue.
+    wb_available = True
+    try:
+        wage_loader = WageLoader(country_iso3=country_iso3)
+        wb = wage_loader.fetch_worldbank(["SL.EMP.WORK.ZS"])
+        wage_cells = len(wb) if not wb.empty else 0
+        wage_proxies = len(wage_loader.last_gap_proxies)
+    except (Exception, SystemExit):
+        wb_available = False
+        wage_cells, wage_proxies = 0, 0
 
     total_cells = weather_cells + wage_cells
     total_proxies = len(weather_proxies) + wage_proxies
@@ -66,7 +103,7 @@ def _mode_b_proxy_rate() -> dict:
         "pct_direct": (total_cells - total_proxies) / total_cells * 100.0 if total_cells else 100.0,
         "pct_proxied": total_proxies / total_cells * 100.0 if total_cells else 0.0,
         "max_reach_days": max_reach_days, "max_reach_km": max_reach_km,
-        "n_fabricated": 0,
+        "n_fabricated": 0, "wb_available": wb_available,
     }
 
 
@@ -162,7 +199,7 @@ def _plot_mape_comparison(mape_full: dict, mape_flat: dict, mae_full: float,
                           mae_flat: float, path: Path) -> None:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.5, 4.4))
     for ax, (full_v, flat_v), title, ylabel in (
-        (ax1, (mae_full, mae_flat), "MAE (PRIMARY -- lower is better)", "MAE (INR)"),
+        (ax1, (mae_full, mae_flat), "MAE (PRIMARY -- lower is better)", f"MAE ({CCY})"),
         (ax2, (mape_full["mape"], mape_flat["mape"]),
          "MAPE (secondary -- pathological here)", "MAPE (%)"),
     ):
@@ -199,7 +236,80 @@ def _plot_trigger_rate_calendar(window_summary: pd.DataFrame, path: Path) -> Non
     plt.close(fig)
 
 
+def write_statewise_results(path: Path = STATEWISE_PATH) -> int:
+    """Aggregate every state that has a chosen contract into one cross-state
+    table. FRAME is a first-class column (income smoothing vs catastrophe -- the
+    climate-regime discrimination, never forced), the grid-ceiling censoring flag
+    is surfaced explicitly, and every premium is shown IN ITS OWN CURRENCY (INR
+    for IN states, USD for US states) -- never converted, never an unlabeled mix.
+    """
+    from backend.state_context import all_state_keys, get_context
+
+    keys = all_state_keys()
+    rows = []
+    for sk in keys:
+        ctx = get_context(sk)
+        cpath = ctx.artifact("contract.json")
+        if not cpath.exists():
+            continue  # not yet designed -- the batch fills it in later
+        c = json.loads(cpath.read_text())
+        wages = ctx.daily_wages()
+        rep_occ = "construction" if "construction" in wages else max(wages, key=wages.get)
+        prem_frac = c["premium_to_cap"] * c["cap"]      # LSMC fair-value wage-fraction
+        prem_ccy = prem_frac * wages[rep_occ]
+        rows.append({
+            "key": sk, "state": ctx.wage_provenance().get("state", sk), "metro": ctx.metro,
+            "currency": ctx.currency, "frame": c["frame"], "strike": c["strike"],
+            "window": c["window_days"], "ceiling": bool(c.get("strike_at_grid_ceiling", False)),
+            "prem_frac": prem_frac, "prem_ccy": prem_ccy, "rep_occ": rep_occ,
+            "cat_passing": c["n_catastrophe_passing"], "mae_impr": c["mae_improvement_pct"],
+        })
+    rows.sort(key=lambda r: r["key"])
+
+    out = ["# State-wise Contract Results\n"]
+    out.append(f"_Generated {pd.Timestamp.now(tz='UTC').isoformat()} from each state's "
+               f"`models/artifacts/<state>/contract.json`. {len(rows)} of {len(keys)} states "
+               f"designed so far; the rest fill in as `make train-all-states` runs._\n")
+    out.append("**Frame is chosen by climate regime, never forced** (see "
+               "`backend/backtest/contract_design.py`): chronic-moderate peril -> INCOME "
+               "SMOOTHING; consistently-extreme peril -> rare-trigger CATASTROPHE insurance. "
+               "Premium is the LSMC fair-value premium "
+               "(`premium_to_cap * cap * representative daily wage`), each **in that state's "
+               "own currency -- never converted, never mixed unlabeled**.\n")
+    out.append("| State | Metro | Frame | Strike | Window | Grid-ceiling censored? | "
+               "Premium (fair-value) | Premium (wage-frac) | Cat-passing | MAE vs flat |")
+    out.append("|---|---|---|---:|---:|:---:|---:|---:|---:|---:|")
+    for r in rows:
+        ceiling = "⚠️ **YES**" if r["ceiling"] else "no"
+        out.append(
+            f"| {r['state']} (`{r['key']}`) | {r['metro']} | "
+            f"**{r['frame'].replace('_', ' ')}** | {r['strike']} | {r['window']}d | {ceiling} | "
+            f"{r['prem_ccy']:.2f} {r['currency']} ({r['rep_occ']}) | {r['prem_frac']:.3f} | "
+            f"{r['cat_passing']} | {r['mae_impr']:+.1f}% |")
+    out.append("")
+    if rows:
+        n_ceiling = sum(r["ceiling"] for r in rows)
+        out.append(f"**Grid-ceiling audit**: {n_ceiling} of {len(rows)} chosen strikes land on "
+                   f"STRIKE_GRID's maximum (99) -- a flagged state's true optimum may be censored "
+                   f"beyond the grid and must be reviewed before its premium is trusted.\n")
+    else:
+        out.append("_No state has a chosen contract yet -- run "
+                   "`STATE_KEY=<state> python -m backend.backtest.contract_design` or "
+                   "`make train-all-states`._\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out) + "\n")
+    print(f"[ARTIFACT] {path} ({len(rows)}/{len(keys)} states designed)")
+    return 0
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Backtest report / cross-state aggregation")
+    parser.add_argument("--statewise", action="store_true",
+                        help="aggregate all designed states -> docs/STATEWISE_RESULTS.md, then exit")
+    args = parser.parse_args()
+    if args.statewise:
+        return write_statewise_results()
+
     started = time.time()
     print("=" * 78)
     print("BACKTEST REPORT")
@@ -312,7 +422,10 @@ def main() -> int:
     _plot_trigger_rate_calendar(ws, FIGURES_DIR / "trigger_rate_calendar.png")
 
     # --- Assemble markdown ------------------------------------------------
-    wage_provenance = WageLoader(country_iso3="IND").wage_provenance(city_key="ahmedabad")
+    wage_provenance = (
+        None if _CTX is not None
+        else WageLoader(country_iso3="IND").wage_provenance(city_key="ahmedabad")
+    )
     lines: list[str] = []
     lines.append("# Backtest Report -- Pricing the Heat\n")
     lines.append(f"_Generated {pd.Timestamp.now(tz='UTC').isoformat()}_\n")
@@ -322,12 +435,22 @@ def main() -> int:
                 f"real fetch recorded in `data/raw/*.meta.json` sidecars.")
     lines.append(f"- **Wages (labor structure)**: World Bank Indicators v2 "
                 f"(`{WORLD_BANK_HOST}`), indicator SL.EMP.WORK.ZS.")
-    lines.append("- **Baseline daily wages (cited, not API)**:")
-    for rec in wage_provenance:
-        tag = "verified" if rec["verified"] else "**UNVERIFIED -- human confirmation required**"
-        lines.append(f"  - {rec['occupation']}: {rec['currency']} {rec['value']} -- "
-                    f"{rec['source_name'].strip()} ({rec['source_url']}, "
-                    f"{rec['effective_date']}) [{tag}]")
+    if _CTX is not None:
+        wp = _CTX.wage_provenance()
+        tag = "verified" if wp["verified"] else "**UNVERIFIED -- human confirmation required**"
+        lines.append(f"- **Baseline daily wages (cited, not API)** -- {wp['state']}, "
+                    f"{wp['country']} ({wp['currency']}):")
+        for occ, wage in wp["wages_daily"].items():
+            lines.append(f"  - {occ}: {wp['currency']} {wage}")
+        note = f" -- {wp['note']}" if wp.get("note") else ""
+        lines.append(f"  - source: {wp['source_url']} [{tag}]{note}")
+    else:
+        lines.append("- **Baseline daily wages (cited, not API)**:")
+        for rec in wage_provenance:
+            tag = "verified" if rec["verified"] else "**UNVERIFIED -- human confirmation required**"
+            lines.append(f"  - {rec['occupation']}: {rec['currency']} {rec['value']} -- "
+                        f"{rec['source_name'].strip()} ({rec['source_url']}, "
+                        f"{rec['effective_date']}) [{tag}]")
     lines.append("- **Elasticity (the one labeled modeling assumption)**:")
     for rec in elasticity.provenance():
         lines.append(f"  - {', '.join(rec['occupations'])}: {rec['per_deg']}/degC above "
@@ -340,6 +463,10 @@ def main() -> int:
                 f"(max reach: {completeness['max_reach_days']}d / "
                 f"{completeness['max_reach_km']:.1f}km), "
                 f"{completeness['n_fabricated']} fabricated.\n")
+    if not completeness.get("wb_available", True):
+        lines.append("- **World Bank labor-structure context: UNAVAILABLE** for this state "
+                    "(fetch unreachable). Supplementary provenance only, NOT a pricing input -- "
+                    "the STGCN heat map, PPO behaviour, copula, and premium are unaffected.\n")
 
     lines.append("## Modeling Assumptions\n")
     lines.append("> **Elasticity**: ~2.6%/C wage loss above 24C WBGT (default), "
@@ -364,7 +491,7 @@ def main() -> int:
         f"{mae_full['n_included']} nonzero-payout windows.\n")
     lines.append("| metric | Full model (LSMC) | Flat-rate baseline | full vs flat |")
     lines.append("|---|---|---|---|")
-    lines.append(f"| **MAE (INR)** — primary | **{mae_full['mae']:.2f}** | "
+    lines.append(f"| **MAE ({CCY})** — primary | **{mae_full['mae']:.2f}** | "
                 f"{mae_flat['mae']:.2f} | **{mae_improvement_pct:+.1f}%** |")
     lines.append(f"| Tail-weighted error (top 10%) | {tail_full['tail_weighted_error']:.2f} | "
                 f"{tail_flat['tail_weighted_error']:.2f} | "
@@ -375,8 +502,8 @@ def main() -> int:
     lines.append(
         f"**On the tail** (the top {tail_full['n_tail']} largest-loss windows, where "
         f"insurance economics live), the full model's error is "
-        f"{tail_full['tail_weighted_error']:.0f} INR vs the flat baseline's "
-        f"{tail_flat['tail_weighted_error']:.0f} INR. The flat baseline's fixed low "
+        f"{tail_full['tail_weighted_error']:.0f} {CCY} vs the flat baseline's "
+        f"{tail_flat['tail_weighted_error']:.0f} {CCY}. The flat baseline's fixed low "
         f"premium -- the very thing MAPE rewards -- is catastrophic exactly where it "
         f"matters most.\n")
     lines.append("### Robustness of the MAE lead\n")
@@ -387,7 +514,7 @@ def main() -> int:
         f"**{win_rate * 100:.1f}%** of windows (not carried by a few).\n"
         f"- **Bootstrap 95% CI** on MAE(flat) - MAE(full) ({robustness['n_boot']:,} "
         f"resamples, seed {robustness['seed']}): "
-        f"[{robustness['ci_low']:.1f}, {robustness['ci_high']:.1f}] INR, "
+        f"[{robustness['ci_low']:.1f}, {robustness['ci_high']:.1f}] {CCY}, "
         f"which **{'EXCLUDES' if robustness['ci_excludes_zero'] else 'INCLUDES'} zero** -- "
         f"the lead is {'robust' if robustness['ci_excludes_zero'] else 'FRAGILE (reported as such)'}. "
         f"Improvement 95% CI: [{robustness['improvement_pct_ci'][0]:.1f}%, "
@@ -514,7 +641,7 @@ def main() -> int:
                 f"daily payout against each worker's own hurdle-model wage loss.\n")
     lines.append("| basis_risk_rmse | shortfall_rate | overpay_rate | correlation |")
     lines.append("|---|---|---|---|")
-    lines.append(f"| {basis['basis_risk_rmse']:.2f} INR | "
+    lines.append(f"| {basis['basis_risk_rmse']:.2f} {CCY} | "
                 f"{basis['shortfall_rate'] * 100:.1f}% | {basis['overpay_rate'] * 100:.1f}% | "
                 f"{basis['correlation']:.3f} |\n")
     lines.append(
@@ -556,7 +683,7 @@ def main() -> int:
         f"itself aggregating {len(daily):,} worker-days, comfortably exceeding the "
         f">=1000 worker-day threshold). This is a capital-adequacy question ('how much "
         f"must the insurer hold'), NOT a statement about workers' wage losses.\n")
-    lines.append("| alpha | VaR (INR/day) | Expected Shortfall (INR/day) |")
+    lines.append(f"| alpha | VaR ({CCY}/day) | Expected Shortfall ({CCY}/day) |")
     lines.append("|---|---|---|")
     for alpha, vals in var_es.items():
         lines.append(f"| {alpha:.0%} | {vals['var']:.2f} | {vals['es']:.2f} |")

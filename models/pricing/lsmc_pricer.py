@@ -47,6 +47,7 @@ limitations of the upstream fit, not of the pricer.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -65,13 +66,32 @@ from models.pricing.basis_risk import basis_risk_simulated
 from models.pricing.wang_transform import wang_premium
 
 SEED = 42
-COPULA_PATH = Path("models/artifacts/copula.json")
-MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
 
-# Contract defaults -- sourced from backend/data/cities.yaml's `contract:`
-# section (the CHOSEN strike/window, Prompt 6b), NOT hardcoded here, so the
-# backtest and the API can never silently drift apart. See backend/config.py.
-_CONTRACT = load_contract_config()
+# Per-state namespacing (v2): STATE_KEY set -> this state's copula + mu-TEVI and
+# its OWN chosen contract (models/artifacts/<state>/contract.json, written by
+# backend/backtest/contract_design.py's per-state sweep). Until that sweep has
+# run for the state, the contract falls back to the shared cities.yaml one, so
+# the sweep itself (which passes strike/window explicitly) is never blocked.
+# STATE_KEY unset -> legacy single-city behaviour, unchanged.
+_STATE_KEY = os.environ.get("STATE_KEY")
+if _STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(_STATE_KEY)
+    COPULA_PATH = _CTX.artifact("copula.json")
+    MU_TEVI_PATH = _CTX.processed("mu_tevi.parquet")
+    _contract_path = _CTX.artifact("contract.json")
+    _CONTRACT = json.loads(_contract_path.read_text()) if _contract_path.exists() \
+        else load_contract_config()
+else:
+    _CTX = None
+    COPULA_PATH = Path("models/artifacts/copula.json")
+    MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
+    # Contract defaults -- sourced from backend/data/cities.yaml's `contract:`
+    # section (the CHOSEN strike/window, Prompt 6b), NOT hardcoded here, so the
+    # backtest and the API can never silently drift apart. See backend/config.py.
+    _CONTRACT = load_contract_config()
+
 DEFAULT_STRIKE = float(_CONTRACT["strike"])     # mu-TEVI trigger (index in [0,100]).
 PAYOUT_CAP = MAX_LOSS_FRACTION   # 0.9; caps payout at the same ceiling as modeled loss.
 DEFAULT_HORIZON = int(_CONTRACT["window_days"])  # days, if no window is supplied.
@@ -266,12 +286,21 @@ class LSMCPricer:
 
     @staticmethod
     def _occupation_wage(occupation: str) -> float:
-        with open(CITIES_YAML_PATH) as f:
-            config = yaml.safe_load(f)
-        key = config["default_city"]
-        wages = WageLoader(
-            country_iso3=config["cities"][key]["country_iso3"]
-        ).occupation_baseline_wages(city_key=key)
+        # Per-state (v2): when STATE_KEY is set the wage MUST come from THIS
+        # state's own legislated schedule, in its own currency (INR for IN, USD
+        # for US) -- never cities.yaml's default_city. Reading default_city here
+        # was a real bug: every state silently priced in Ahmedabad's INR wage
+        # regardless of which state was detected. STATE_KEY unset -> legacy
+        # single-city path, unchanged.
+        if _CTX is not None:
+            wages = _CTX.daily_wages()
+        else:
+            with open(CITIES_YAML_PATH) as f:
+                config = yaml.safe_load(f)
+            key = config["default_city"]
+            wages = WageLoader(
+                country_iso3=config["cities"][key]["country_iso3"]
+            ).occupation_baseline_wages(city_key=key)
         if occupation not in wages:
             raise ValueError(f"unknown occupation {occupation!r}; have {sorted(wages)}")
         return float(wages[occupation])
@@ -345,14 +374,15 @@ def main() -> int:
     print()
 
     lam_w = 0.30  # Wang market price of risk (NOT lambda_U; see wang_transform.py).
+    ccy = _CTX.currency if _CTX is not None else "INR"  # this state's own currency, never assumed
     for occupation in ("vendor", "construction", "delivery"):
         result = pricer.price_window(window, occupation, market_price_of_risk=lam_w)
         br = result["basis_risk"]
-        print(f"[{occupation.upper()}]  wage={result['wage']:.1f} INR/day | "
+        print(f"[{occupation.upper()}]  wage={result['wage']:.1f} {ccy}/day | "
               f"trigger freq={result['payout_schedule']['trigger_frequency']:.3f}")
-        print(f"           premium LSMC = {result['premium_lsmc']:8.3f} INR "
+        print(f"           premium LSMC = {result['premium_lsmc']:8.3f} {ccy} "
               f"({result['premium_lsmc_fraction']:.4f} wage-frac)")
-        print(f"           premium Wang = {result['premium_wang']:8.3f} INR "
+        print(f"           premium Wang = {result['premium_wang']:8.3f} {ccy} "
               f"({result['premium_wang_fraction']:.4f} wage-frac)  "
               f"[lambda_w={lam_w}, load {result['premium_wang'] / result['premium_lsmc'] - 1:+.1%}]")
         print(f"           basis risk : rmse={br['basis_risk_rmse']:.4f}  "

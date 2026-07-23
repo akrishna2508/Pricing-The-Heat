@@ -15,6 +15,13 @@ data/raw/*
 data/processed/*
 models/artifacts/*
 .pytest_cache/
+.DS_Store
+
+# Batch runner outputs -- regenerable per-run, not source (per-state weights/
+# parquet/artifacts are already ignored above via models/artifacts + data/processed).
+notebooks/artifacts/batch_manifest.json
+notebooks/artifacts/batch_logs/
+notebooks/artifacts/batch_stdout.log
 
 # deploy_artifacts/ ships a fixed, small set of trained weights WITH the repo
 # so Render's build (which has no access to local artifacts) can serve the

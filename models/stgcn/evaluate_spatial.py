@@ -28,6 +28,7 @@ PROTOCOL FIDELITY (this is the point of the script, not an afterthought):
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -54,8 +55,18 @@ from models.stgcn.train import (
     window_starts,
 )
 
-METRICS_PATH = Path("notebooks/artifacts/spatial_baseline_metrics.json")
-PLOT_PATH = Path("notebooks/artifacts/spatial_baseline_comparison.png")
+# Per-state namespacing (v2): STATE_KEY set -> this state's namespaced metrics
+# (tevi.py gates on this state's honesty_gate). Unset -> legacy path unchanged.
+_STATE_KEY = os.environ.get("STATE_KEY")
+if _STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(_STATE_KEY)
+    METRICS_PATH = _CTX.artifact("spatial_baseline_metrics.json")
+    PLOT_PATH = _CTX.artifact("spatial_baseline_comparison.png")
+else:
+    METRICS_PATH = Path("notebooks/artifacts/spatial_baseline_metrics.json")
+    PLOT_PATH = Path("notebooks/artifacts/spatial_baseline_comparison.png")
 IDW_POWER = 2
 
 # Below this margin over the best trivial spatial baseline, the honesty gate

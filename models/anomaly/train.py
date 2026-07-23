@@ -7,6 +7,7 @@ models/anomaly/detector.py). Saved to models/artifacts/anomaly.pkl.
 
 from __future__ import annotations
 
+import os
 import pickle
 import sys
 import time
@@ -16,8 +17,19 @@ import pandas as pd
 
 from models.anomaly.detector import ClaimAnomalyDetector
 
-CLAIMS_PATH = Path("data/processed/claims.parquet")
-MODEL_PATH = Path("models/artifacts/anomaly.pkl")
+# Per-state namespacing (v2): STATE_KEY set -> this state's claims + anomaly
+# model. Unset -> legacy single-city paths, unchanged.
+STATE_KEY = os.environ.get("STATE_KEY")
+if STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(STATE_KEY)
+    CLAIMS_PATH = _CTX.processed("claims.parquet")
+    MODEL_PATH = _CTX.artifact("anomaly.pkl")
+else:
+    _CTX = None
+    CLAIMS_PATH = Path("data/processed/claims.parquet")
+    MODEL_PATH = Path("models/artifacts/anomaly.pkl")
 
 
 def load_claims() -> pd.DataFrame:

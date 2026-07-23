@@ -15,6 +15,7 @@ metrics: real or it stops, never massaged).
 
 from __future__ import annotations
 
+import os
 import random
 import sys
 import time
@@ -29,8 +30,20 @@ from torch.utils.data import DataLoader, TensorDataset
 from models.forecast.model import GRUForecaster
 
 SEED = 42
-MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
-MODEL_PATH = Path("models/artifacts/forecaster.pt")
+
+# Per-state namespacing (v2): STATE_KEY set -> this state's mu-TEVI series +
+# forecaster. Unset -> legacy single-city paths, unchanged.
+STATE_KEY = os.environ.get("STATE_KEY")
+if STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(STATE_KEY)
+    MU_TEVI_PATH = _CTX.processed("mu_tevi.parquet")
+    MODEL_PATH = _CTX.artifact("forecaster.pt")
+else:
+    _CTX = None
+    MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
+    MODEL_PATH = Path("models/artifacts/forecaster.pt")
 
 T_IN = 14           # days of history fed to the GRU (matches the 14-day contract window).
 HORIZON = 7         # forecast t+1 .. t+7.

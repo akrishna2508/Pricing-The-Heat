@@ -75,6 +75,7 @@ correct recipe -- call them rather than reimplementing.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -106,12 +107,27 @@ from models.stgcn.train import load_weather
 
 SEED = 42
 
-WAGE_LOSS_PATH = Path("data/processed/wage_loss.parquet")
-MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
-COPULA_PATH = Path("models/artifacts/copula.json")
-QQ_PLOT_PATH = Path("notebooks/artifacts/gev_qq.png")
-HURDLE_PLOT_PATH = Path("notebooks/artifacts/hurdle_marginal.png")
-SPATIAL_METRICS_PATH = Path("notebooks/artifacts/spatial_baseline_metrics.json")
+# Per-state namespacing (v2): STATE_KEY set -> this state's namespaced I/O
+# (its wage_loss in, its copula/mu-TEVI out, its spatial-metrics honesty gate).
+# Unset -> legacy single-city paths unchanged.
+_STATE_KEY = os.environ.get("STATE_KEY")
+if _STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(_STATE_KEY)
+    WAGE_LOSS_PATH = _CTX.processed("wage_loss.parquet")
+    MU_TEVI_PATH = _CTX.processed("mu_tevi.parquet")
+    COPULA_PATH = _CTX.artifact("copula.json")
+    QQ_PLOT_PATH = _CTX.artifact("gev_qq.png")
+    HURDLE_PLOT_PATH = _CTX.artifact("hurdle_marginal.png")
+    SPATIAL_METRICS_PATH = _CTX.artifact("spatial_baseline_metrics.json")
+else:
+    WAGE_LOSS_PATH = Path("data/processed/wage_loss.parquet")
+    MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
+    COPULA_PATH = Path("models/artifacts/copula.json")
+    QQ_PLOT_PATH = Path("notebooks/artifacts/gev_qq.png")
+    HURDLE_PLOT_PATH = Path("notebooks/artifacts/hurdle_marginal.png")
+    SPATIAL_METRICS_PATH = Path("notebooks/artifacts/spatial_baseline_metrics.json")
 
 # From Prompt 3: kappa/gamma are conditional on this fixed logit choice-noise
 # scale. Recorded in copula.json so downstream pricing cannot forget that the

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
 import random
 import sys
 import time
@@ -56,10 +57,25 @@ from models.stgcn.model import STGCN
 
 SEED = 42
 
-# Canonical artifact paths (CLAUDE.md Golden Rule 9 -- explicit, never inferred).
-WEATHER_PARQUET = Path("data/processed/weather.parquet")
-MODEL_PATH = Path("models/artifacts/stgcn.pt")
-PLOT_PATH = Path("notebooks/artifacts/stgcn_mae.png")
+# Per-state namespacing (v2 state-wise pipelines): when STATE_KEY is set -- the
+# batch runner sets it per-state in a subprocess -- every I/O path is namespaced
+# under that state's dirs and the heat grid is its anchor-metro bbox. When
+# UNSET, behaviour is exactly the legacy single-city path, so `make reproduce`
+# and the existing tests are unchanged. (CLAUDE.md Golden Rule 9 -- explicit
+# paths, never inferred; here the state_key makes them explicit per state.)
+STATE_KEY = os.environ.get("STATE_KEY")
+if STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(STATE_KEY)
+    WEATHER_PARQUET = _CTX.processed("weather.parquet")
+    MODEL_PATH = _CTX.artifact("stgcn.pt")
+    PLOT_PATH = _CTX.artifact("stgcn_mae.png")
+else:
+    _CTX = None
+    WEATHER_PARQUET = Path("data/processed/weather.parquet")
+    MODEL_PATH = Path("models/artifacts/stgcn.pt")
+    PLOT_PATH = Path("notebooks/artifacts/stgcn_mae.png")
 
 # Laptop-scoped hyperparameters (Golden Rule 4).
 T_IN = 12
@@ -95,11 +111,14 @@ def load_weather(start: str = "20140101", end: str = "20231231") -> pd.DataFrame
     if WEATHER_PARQUET.exists():
         return pd.read_parquet(WEATHER_PARQUET)
 
-    with open(CITIES_YAML_PATH) as f:
-        config = yaml.safe_load(f)
-    city = config["cities"][config["default_city"]]
+    if _CTX is not None:
+        bbox = _CTX.bbox            # this state's anchor-metro grid
+    else:
+        with open(CITIES_YAML_PATH) as f:
+            config = yaml.safe_load(f)
+        bbox = config["cities"][config["default_city"]]["bbox"]
 
-    loader = WeatherLoader(bbox=city["bbox"])
+    loader = WeatherLoader(bbox=bbox)
     raw = loader.fetch_daily(start=start, end=end)
     filled, proxies = loader.fill_gaps(raw)
     filled = filled.assign(**{TARGET_COL: loader.to_wbgt_approx(filled)})

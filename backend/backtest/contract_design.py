@@ -4,25 +4,48 @@ This does NOT retrain any model -- it is CONTRACT calibration (choosing the
 strike and coverage window), which is distinct from tuning the pricing/heat/
 behavioral models. Those are frozen.
 
-THE CENTRAL FINDING, forced by the data and reported whatever it shows: heat
-wage-loss for outdoor workers is a CHRONIC, seasonal, HIGH-FREQUENCY risk --
-workers lose wages on ~66% of worker-days -- not a rare catastrophe. There is a
-monotonic, unavoidable trade-off: making the contract behave like catastrophe
-insurance (rare trigger, cheap premium) requires a high strike, and a high
-strike drives the worker's shortfall_rate (fraction of days under-compensated)
-from ~20% up to ~64%. No point on the grid buys rare-trigger AND good coverage.
+THE FRAME IS CHOSEN BY THE DATA'S CLIMATE REGIME, never forced onto a state. An
+"honesty gate" (behaves_like_insurance, below) tests every grid point against
+three explicit catastrophe-insurance criteria -- rare trigger AND cheap premium
+AND still-good coverage -- and frames the product by what actually passes:
 
-So the "behaves like catastrophe insurance" test below is EXPECTED to fail for
-every grid point, and when it does the product is honestly reframed as
-high-frequency INCOME SMOOTHING. That reframing is the real result, not a
-failure hidden -- and the chosen contract is then selected for the
-income-smoothing objective (an UNBIASED index, minimizing the asymmetry between
-under- and over-compensation), not by cherry-picking whichever single metric
-happens to look best.
+  * CHRONIC-MODERATE peril (a temperate metro): heat wage-loss is high-frequency
+    -- workers lose wages on a large majority of worker-days (~66% for a metro
+    like Ahmedabad) -- so a monotonic, unavoidable trade-off bites: a rarer
+    trigger needs a higher strike, and a higher strike drives the worker's
+    shortfall_rate (days under-compensated) up steeply. NO grid point buys
+    rare-trigger AND good coverage, every point fails the catastrophe test, and
+    the product is honestly reframed as high-frequency INCOME SMOOTHING -- the
+    real result, not a hidden failure. The strike is then chosen for an UNBIASED
+    index (minimizing |shortfall - overpay|), never by cherry-picking whichever
+    single metric looks best.
+
+  * CONSISTENTLY-EXTREME peril (a persistently hot metro): the same high strike
+    that guts coverage in a temperate metro instead lands only on genuinely
+    rare, genuinely extreme days, so a high-strike point CAN satisfy all three
+    catastrophe criteria at once. When one does it is chosen as real CATASTROPHE
+    INSURANCE (lowest shortfall among the passing points), in preference to the
+    income-smoothing reframe -- the better product where the climate earns it.
+
+EMPIRICALLY DEMONSTRATED, not merely asserted: on the real per-state replays,
+Ahmedabad (moderate) yields 0 catastrophe-passing points -> income smoothing at
+strike 75, while Phoenix / US-Arizona (extreme) yields 3 passing points ->
+catastrophe insurance at strike 98 -- same code, opposite frames, driven only by
+the two heat distributions. Reproduce by running this module with STATE_KEY
+unset (Ahmedabad) vs STATE_KEY=US-Arizona (Phoenix); the chosen frame and
+n_catastrophe_passing are recorded in each state's contract.json.
+
+STRIKE_GRID reaches 99, the feasibility ceiling (payout divides by 100-strike,
+so strike must stay below 100; 99 is the largest integer strike that can ever
+trigger), so a hot state's optimum is found in the grid interior and PROVABLY
+not censored at the edge -- select_contract flags any chosen strike that still
+lands on the ceiling (strike_at_grid_ceiling in contract.json).
 """
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -42,11 +65,37 @@ from models.pricing.basis_risk import basis_risk_empirical
 from models.pricing.lsmc_pricer import PAYOUT_CAP, LSMCPricer, payout_fraction
 
 SEED = 42
-SWEEP_PLOT_PATH = Path("notebooks/artifacts/contract_design_sweep.png")
-SWEEP_TABLE_PATH = Path("notebooks/artifacts/contract_design_sweep.csv")
+
+# Per-state namespacing (v2): STATE_KEY set -> this state's sweep artifacts and
+# its CHOSEN contract (contract.json), so every state is priced on its OWN
+# strike/window, never Ahmedabad's. Unset -> legacy single-city paths.
+_STATE_KEY = os.environ.get("STATE_KEY")
+if _STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(_STATE_KEY)
+    SWEEP_PLOT_PATH = _CTX.artifact("contract_design_sweep.png")
+    SWEEP_TABLE_PATH = _CTX.artifact("contract_design_sweep.csv")
+    CONTRACT_PATH = _CTX.artifact("contract.json")
+else:
+    _CTX = None
+    SWEEP_PLOT_PATH = Path("notebooks/artifacts/contract_design_sweep.png")
+    SWEEP_TABLE_PATH = Path("notebooks/artifacts/contract_design_sweep.csv")
+    CONTRACT_PATH = None
+
 OCCUPATIONS = ("vendor", "construction", "delivery")
 
-STRIKE_GRID = (55, 60, 65, 70, 75, 80, 85, 90, 95)
+# Extended to the feasibility ceiling strike=99 (strike must be < 100 or
+# payout_fraction divides by zero; mu-TEVI's real max is ~99.1, so 99 is the
+# largest strike that can EVER trigger). The hottest states (e.g. Phoenix) want
+# a strike above 95, and a grid that stopped at 95 -- or even 98 -- would
+# silently CENSOR their optimum at the boundary. Carrying the grid all the way
+# to 99 lets the sweep PROVE the optimum is interior rather than assume it: if a
+# state's chosen strike stays put when the ceiling is raised, it was a genuine
+# optimum, not a censored edge. Strikes above a state's own mu-TEVI max simply
+# never trigger (shortfall_rate->1, |bias| large) and are self-excluded, so the
+# extra high strikes are only ever chosen by states hot enough to justify them.
+STRIKE_GRID = (55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99)
 WINDOW_GRID = (14, 30, 60, 90)
 PRICE_PATHS = 1500  # MC paths per grid point for the premium (laptop-scoped).
 
@@ -296,6 +345,32 @@ def run_design_pass(persist_table: bool = True) -> dict:
     if persist_table:
         SWEEP_TABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
         sweep_df.to_csv(SWEEP_TABLE_PATH, index=False)
+
+    # Persist THIS state's chosen contract so the pricer/replay/API price it on
+    # its OWN strike/window (not Ahmedabad's). window_days key matches
+    # load_contract_config()'s schema so lsmc_pricer reads it interchangeably.
+    if CONTRACT_PATH is not None:
+        r = chosen["row"]
+        payload = {
+            "strike": int(chosen["strike"]),
+            "window_days": int(chosen["window"]),
+            "product_type": chosen["frame"],
+            "frame": chosen["frame"],
+            "cap": float(PAYOUT_CAP),
+            "trigger_rate": float(r["trigger_rate"]),
+            "premium_to_cap": float(r["premium_to_cap"]),
+            "shortfall_rate": float(r["shortfall_rate"]),
+            "overpay_rate": float(r["overpay_rate"]),
+            "mae_improvement_pct": float(r["mae_improvement_pct"]),
+            "n_catastrophe_passing": int(chosen["n_catastrophe_passing"]),
+            # Honest flag: the chosen strike sits at the top of STRIKE_GRID, so
+            # the true unbiased optimum may lie beyond it (a censored boundary
+            # optimum). Reported, never hidden -- the batch runner surfaces it.
+            "strike_at_grid_ceiling": int(chosen["strike"]) == max(STRIKE_GRID),
+        }
+        CONTRACT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONTRACT_PATH.write_text(json.dumps(payload, indent=2) + "\n")
+
     return {"sweep": sweep_df, "chosen": chosen}
 
 
@@ -320,6 +395,10 @@ def main() -> int:
     r = chosen["row"]
     print(f"[CHOSEN]   frame={chosen['frame']} | strike={chosen['strike']} "
           f"window={chosen['window']}d")
+    if int(chosen["strike"]) == max(STRIKE_GRID):
+        print(f"[BOUNDARY] WARNING: chosen strike {chosen['strike']} is the grid ceiling "
+              f"({max(STRIKE_GRID)}); this state's true optimum may be censored -- "
+              f"reported, not hidden.")
     print(f"           trigger_rate={r['trigger_rate']:.3f} premium/cap={r['premium_to_cap']:.3f} "
           f"shortfall={r['shortfall_rate']:.3f} overpay={r['overpay_rate']:.3f} "
           f"|bias|={abs(r['shortfall_rate'] - r['overpay_rate']):.3f}")

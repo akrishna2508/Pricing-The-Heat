@@ -57,6 +57,7 @@ inconsistent, definition of "actual loss").
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -76,14 +77,30 @@ from models.pricing.lsmc_pricer import (
 from models.stgcn.train import load_weather
 
 SEED = 42
-MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
-WAGE_LOSS_PATH = Path("data/processed/wage_loss.parquet")
-CLAIMS_PATH = Path("data/processed/claims.parquet")
 
-WINDOW_DAYS = DEFAULT_HORIZON  # sourced from the shared contract config (14d), see backend/config.py.
+# Per-state namespacing (v2): STATE_KEY set -> this state's namespaced replay
+# I/O; unset -> legacy single-city paths. WINDOW_DAYS follows DEFAULT_HORIZON,
+# which is itself state-aware in lsmc_pricer (this state's chosen contract).
+_STATE_KEY = os.environ.get("STATE_KEY")
+if _STATE_KEY:
+    from backend.state_context import get_context
+
+    _CTX = get_context(_STATE_KEY)
+    MU_TEVI_PATH = _CTX.processed("mu_tevi.parquet")
+    WAGE_LOSS_PATH = _CTX.processed("wage_loss.parquet")
+    CLAIMS_PATH = _CTX.processed("claims.parquet")
+else:
+    _CTX = None
+    MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
+    WAGE_LOSS_PATH = Path("data/processed/wage_loss.parquet")
+    CLAIMS_PATH = Path("data/processed/claims.parquet")
+
+WINDOW_DAYS = DEFAULT_HORIZON  # sourced from the (state-aware) contract config, see backend/config.py.
 
 
 def load_wages() -> dict[str, float]:
+    if _CTX is not None:
+        return _CTX.daily_wages()          # this state's own schedule + currency
     with open(CITIES_YAML_PATH) as f:
         config = yaml.safe_load(f)
     key = config["default_city"]
