@@ -2,6 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Map as MapLibreMap } from "maplibre-gl";
+// MapLibre's own stylesheet -- without it the NavigationControl and the OSM
+// attribution render unpositioned/unstyled on top of the canvas. Imported
+// here rather than in globals.css so it travels with the only page that
+// actually mounts a map.
+import "maplibre-gl/dist/maplibre-gl.css";
 import { ApiError, getHeatmap, getStates } from "@/lib/api";
 import type { HeatmapResponse, StateListEntry } from "@/lib/types";
 import { ErrorBanner } from "@/components/ErrorBanner";
@@ -28,6 +33,7 @@ export default function HeatmapPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [tileWarning, setTileWarning] = useState<string | null>(null);
 
   const [states, setStates] = useState<StateListEntry[] | null>(null);
   const [statesError, setStatesError] = useState<string | null>(null);
@@ -109,7 +115,29 @@ export default function HeatmapPage() {
         zoom: 3,
       });
       map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+      // Mark the map usable as soon as the STYLE parses, not on "load".
+      // "load" waits for the first visually-complete render, which never
+      // happens if any basemap tile fails -- OpenStreetMap's public tile
+      // server burst-throttles with HTTP 503 under its usage policy, and
+      // gating on "load" left the map permanently hidden behind the
+      // "Loading map..." overlay even though the canvas and the real data
+      // layer were fine. styledata fires off the parsed style alone, so
+      // tile availability can no longer block the whole UI.
+      map.once("styledata", () => setMapReady(true));
       map.once("load", () => setMapReady(true));
+
+      // Surface basemap tile failures honestly instead of silently showing a
+      // partly-blank map -- the data layer below is unaffected by them.
+      map.on("error", (e: { error?: { status?: number } }) => {
+        if (e?.error?.status === 429 || e?.error?.status === 503) {
+          setTileWarning(
+            "OpenStreetMap is rate-limiting basemap tiles right now, so parts of the map " +
+              "background may be blank. The heat data below is unaffected.",
+          );
+        }
+      });
+
       mapRef.current = map;
     });
 
@@ -257,6 +285,12 @@ export default function HeatmapPage() {
         <div className="mb-4">
           <ErrorBanner message={error} />
         </div>
+      )}
+
+      {tileWarning && (
+        <p className="mb-2 text-xs text-amber-700" role="status">
+          {tileWarning}
+        </p>
       )}
 
       <div className="relative">

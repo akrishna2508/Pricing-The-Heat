@@ -42,12 +42,22 @@ function groupByCountry(states: StateListEntry[]): Map<string, StateListEntry[]>
   return groups;
 }
 
+// Some real wage sources in config/wages_by_state.yaml carry a human note after
+// the URL (e.g. "https://labour.gov.in (see state Labour Dept notification)").
+// The URL parser treats that trailing text as part of the authority and
+// percent-encodes it, which rendered as
+// "labour.gov.in%20(see%20state%20labour%20dept%20notification)" -- so take
+// only the first whitespace-delimited token before parsing.
+function cleanUrl(url: string): string {
+  return url.trim().split(/\s+/)[0];
+}
+
 function sourceLabel(url: string | null): string {
   if (!url) return "source not on file";
   try {
-    return new URL(url).hostname.replace(/^www\./, "");
+    return new URL(cleanUrl(url)).hostname.replace(/^www\./, "");
   } catch {
-    return url;
+    return cleanUrl(url);
   }
 }
 
@@ -367,8 +377,11 @@ export default function SimulatePage() {
                 {result.wage_provenance.source_url && (
                   <p>
                     Source:{" "}
+                    {/* href uses the bare URL so the link actually resolves;
+                        the full cited string (including any "see the state
+                        notification" guidance) is still shown verbatim. */}
                     <a
-                      href={result.wage_provenance.source_url}
+                      href={cleanUrl(result.wage_provenance.source_url)}
                       target="_blank"
                       rel="noreferrer"
                       className="underline"
