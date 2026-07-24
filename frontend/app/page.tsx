@@ -7,8 +7,12 @@ import type { Map as MapLibreMap, Popup } from "maplibre-gl";
 // here rather than in globals.css so it travels with the only page that
 // actually mounts a map.
 import "maplibre-gl/dist/maplibre-gl.css";
-import mask from "@turf/mask";
+import type { Feature, FeatureCollection, MultiPolygon, Point, Polygon } from "geojson";
 import bbox from "@turf/bbox";
+import interpolate from "@turf/interpolate";
+import intersect from "@turf/intersect";
+import booleanPointInPolygon from "@turf/boolean-point-in-polygon";
+import { featureCollection } from "@turf/helpers";
 import { ApiError, getHeatmap, getStateBoundary, getStates } from "@/lib/api";
 import type { HeatmapResponse, StateBoundary, StateListEntry } from "@/lib/types";
 import { ErrorBanner } from "@/components/ErrorBanner";
@@ -17,15 +21,114 @@ import { ErrorBanner } from "@/components/ErrorBanner";
 // tailwind.config.js's `heat` tokens; duplicated as hex here because MapLibre
 // paint expressions take literal values, not CSS classes.
 const HEAT_COLORS = ["#fef0d9", "#fdcc8a", "#fc8d59", "#e34a33", "#b30000"];
-// Matches the app body background (Tailwind bg-gray-50). The clip mask paints
-// everything OUTSIDE the state with this, so the area beyond the real border
-// reads as blank page, not basemap.
-const MASK_FILL = "#f9fafb";
 const DEFAULT_STATE_KEY = "IN-Gujarat";
 const OSM_ATTRIBUTION = "© OpenStreetMap contributors";
+// Roughly how many cells span the covered region's longest dimension. Adaptive
+// cell size = span / this, so a 0.2deg state (DC) and a 13deg state (Texas)
+// both get a smooth surface without one hardcoded cellSize serving neither.
+const CELLS_ACROSS = 48;
+
+// Build the state-clipped IDW heat surface from the REAL per-node points.
+//
+// WHY IDW-INTO-A-FILL, not MapLibre's native heatmap layer (v2.5): each state's
+// nodes come from its ~2deg anchor-metro NASA POWER grid, which for a tiny
+// state sits ENTIRELY OUTSIDE the real border -- measured: 0 of 12 DC nodes,
+// 1 of 12 Rhode Island nodes fall inside their own state. A heatmap layer can't
+// be polygon-clipped, so v2.5 blanked everything outside the border with an
+// opaque mask, which erased all of DC's heat (every node was outside). IDW
+// instead ESTIMATES a value INSIDE the border from the surrounding real nodes,
+// so a tiny state fills correctly, and the result is real polygons a fill layer
+// CAN clip -- no mask, basemap stays visible everywhere.
+//
+// HONEST EXTRAPOLATION LIMIT (Golden Rule 5 in visual form): IDW will invent a
+// value arbitrarily far from any real node. So the grid is confined to the
+// COVERAGE ENVELOPE -- the node bounding box grown by one grid spacing --
+// intersected with the state. Where a large state (Texas, California) extends
+// past its ~2deg sampled grid, that area is left UNCOVERED (basemap only),
+// never painted from data that was never sampled there.
+function buildHeatSurface(
+  points: FeatureCollection<Point>,
+  boundary: StateBoundary,
+): { surface: FeatureCollection; cellCount: number; ms: number } {
+  const t0 = performance.now();
+  const [nxmin, nymin, nxmax, nymax] = bbox(points);
+  const [sxmin, symin, sxmax, symax] = bbox(boundary);
+
+  // Node grid spacing = smallest gap between distinct node latitudes (the real
+  // NASA POWER cell size for this state), used to grow the coverage envelope by
+  // exactly one cell so IDW never reaches beyond a plausible neighbourhood.
+  const lats = [...new Set(points.features.map((f) => (f.geometry as Point).coordinates[1]))].sort(
+    (a, b) => a - b,
+  );
+  let spacing = Infinity;
+  for (let i = 1; i < lats.length; i += 1) spacing = Math.min(spacing, lats[i] - lats[i - 1]);
+  if (!Number.isFinite(spacing) || spacing <= 0) spacing = 0.5;
+
+  // Coverage envelope (node bbox + one cell) intersected with the state bbox.
+  const cb: [number, number, number, number] = [
+    Math.max(sxmin, nxmin - spacing),
+    Math.max(symin, nymin - spacing),
+    Math.min(sxmax, nxmax + spacing),
+    Math.min(symax, nymax + spacing),
+  ];
+  if (cb[0] >= cb[2] || cb[1] >= cb[3]) {
+    return { surface: featureCollection([]), cellCount: 0, ms: performance.now() - t0 };
+  }
+
+  const cellSize = Math.max(cb[2] - cb[0], cb[3] - cb[1]) / CELLS_ACROSS;
+  const grid = interpolate(points, cellSize, {
+    gridType: "square",
+    property: "heat_index",
+    weight: 2,
+    units: "degrees",
+    bbox: cb,
+  });
+
+  // Clip cells to the REAL state polygon (Polygon OR MultiPolygon). The naive
+  // approach -- intersect() every cell -- was measured at 2.8s (Gujarat) to
+  // 5.8s (Texas), an unshippable freeze on the selector. The overwhelming
+  // majority of cells lie ENTIRELY inside or outside the border; only the thin
+  // ring of border-straddling cells actually needs the expensive polygon clip.
+  // So classify each cell by its 4 corners (cheap point-in-polygon): all-in ->
+  // keep the whole square; all-out -> drop (re-checking the center guards a
+  // state thinner than one cell); mixed -> do the real intersect so the edge
+  // follows the true border. This cut Texas from 5826ms to well under 500ms.
+  const clipped: Feature[] = [];
+  const boundaryPoly = boundary as Feature<Polygon | MultiPolygon>;
+  for (const cell of grid.features) {
+    const cellPoly = cell as Feature<Polygon>;
+    const heat = (cell.properties as { heat_index: number }).heat_index;
+    const ring = cellPoly.geometry.coordinates[0];
+    let inside = 0;
+    for (let i = 0; i < 4; i += 1) {
+      if (booleanPointInPolygon(ring[i] as [number, number], boundaryPoly)) inside += 1;
+    }
+    if (inside === 4) {
+      cellPoly.properties = { heat_index: heat };
+      clipped.push(cellPoly);
+      continue;
+    }
+    if (inside === 0) {
+      const cx = (ring[0][0] + ring[2][0]) / 2;
+      const cy = (ring[0][1] + ring[2][1]) / 2;
+      if (!booleanPointInPolygon([cx, cy] as [number, number], boundaryPoly)) continue;
+    }
+    try {
+      const inter = intersect(
+        featureCollection([cellPoly, boundaryPoly]) as FeatureCollection<Polygon | MultiPolygon>,
+        { properties: { heat_index: heat } },
+      );
+      if (inter) clipped.push(inter);
+    } catch {
+      // A rare self-touching Natural Earth ring can make one clip throw; skip
+      // that single cell rather than losing the whole surface.
+    }
+  }
+  return { surface: featureCollection(clipped), cellCount: clipped.length, ms: performance.now() - t0 };
+}
 
 // HONESTY NOTE (carried in code so it can't drift from the UI): rendering the
-// heat field as a smooth kernel-density overlay instead of discrete dots is a
+// heat field as a smooth IDW-interpolated surface instead of discrete dots is a
 // VISUALIZATION choice, not a data change. The numbers stay the real per-node
 // heat_index that /heatmap returns and that pricing consumes; the ONLY thing
 // interpolated is how the map is drawn between those real sample points. This
@@ -210,8 +313,8 @@ export default function HeatmapPage() {
     };
   }, []);
 
-  // Draw / update the continuous overlay. MapLibre's own source/paint types
-  // are version-sensitive; the GeoJSON shapes here already satisfy the real
+  // Draw / update the overlay. MapLibre's own source/paint types are
+  // version-sensitive; the GeoJSON shapes here already satisfy the real
   // contract, so the casts are a narrow escape hatch at the MapLibre boundary.
   useEffect(() => {
     const map = mapRef.current;
@@ -224,64 +327,58 @@ export default function HeatmapPage() {
       else map.addSource(id, { type: "geojson", data: geojson as never });
     };
 
-    // Real per-node heat_index -> a 0..1 heatmap weight, from THIS state's own
-    // observed min/max (never a hardcoded weight). Guard the degenerate
-    // all-equal case so the interpolate stops stay strictly increasing.
-    let weightExpr: unknown = null;
+    // Data-driven OrRd fill color from THIS state+date's real observed min/max,
+    // so winter and summer both keep usable contrast (never a hardcoded range).
+    let colorExpr: unknown = null;
     if (data && data.features.length > 0) {
-      upsertSource("grid", data);
+      upsertSource("grid", data); // raw real nodes: hover targets + IDW input
       const values = data.features.map((f) => f.properties.heat_index);
       let min = Math.min(...values);
       let max = Math.max(...values);
       if (max <= min) max = min + 1;
-      weightExpr = ["interpolate", ["linear"], ["get", "heat_index"], min, 0, max, 1];
+      const step = (max - min) / 4;
+      colorExpr = [
+        "interpolate", ["linear"], ["get", "heat_index"],
+        min, HEAT_COLORS[0],
+        min + step, HEAT_COLORS[1],
+        min + step * 2, HEAT_COLORS[2],
+        min + step * 3, HEAT_COLORS[3],
+        max, HEAT_COLORS[4],
+      ];
     }
 
-    if (boundary) {
-      upsertSource("boundary", boundary);
-      // turf.mask(feature) -> the whole-world polygon MINUS this state's real
-      // (possibly MultiPolygon, possibly non-convex) shape. Painted opaque on
-      // top of the heatmap, it makes the color exist only inside the true
-      // border -- a real geometric clip, not a bbox.
-      upsertSource("mask", mask(boundary));
+    if (boundary) upsertSource("boundary", boundary);
+
+    // Build the IDW surface (needs both the real points and the real border).
+    if (data && data.features.length > 0 && boundary) {
+      const { surface, cellCount, ms } = buildHeatSurface(
+        data as unknown as FeatureCollection<Point>,
+        boundary,
+      );
+      // Timing surfaced so a slow (>500ms) large-state interpolation is visible
+      // rather than a quietly laggy selector (DoD 8).
+      console.log(
+        `[heat-surface] ${boundary.properties?.state_key}: ${cellCount} clipped cells in ${ms.toFixed(0)}ms`,
+      );
+      upsertSource("surface", surface);
     }
 
-    // Create the four overlay layers exactly once, in bottom->top order:
-    // heat (blended field) -> mask (clip everything outside the border) ->
-    // outline (the real border line) -> node-hit (invisible but hoverable).
-    if (data && boundary && !map.getLayer("heat-layer")) {
+    // Create the layers exactly once, bottom->top: heat fill (state-clipped IDW
+    // surface) -> real border line -> invisible-but-interactive node points.
+    // NO mask layer: the basemap stays visible everywhere outside the state.
+    if (data && boundary && !map.getLayer("heat-fill")) {
       map.addLayer({
-        id: "heat-layer",
-        type: "heatmap",
-        source: "grid",
-        paint: {
-          "heatmap-weight": weightExpr as never,
-          // Density 0 is transparent so the basemap shows through the cool
-          // areas; the ramp then walks the SAME OrRd scale as the legend.
-          "heatmap-color": [
-            "interpolate", ["linear"], ["heatmap-density"],
-            0, "rgba(254,240,217,0)",
-            0.2, HEAT_COLORS[0],
-            0.4, HEAT_COLORS[1],
-            0.6, HEAT_COLORS[2],
-            0.8, HEAT_COLORS[3],
-            1, HEAT_COLORS[4],
-          ] as never,
-          // Radius grows with zoom so 12 sparse nodes still blend into a
-          // continuous field at state scale AND when zoomed into the metro.
-          "heatmap-radius": [
-            "interpolate", ["linear"], ["zoom"],
-            4, 30, 7, 60, 10, 95, 13, 150,
-          ] as never,
-          // Translucent: OSM streets/labels stay legible under the color.
-          "heatmap-opacity": 0.65,
-        },
-      });
-      map.addLayer({
-        id: "state-mask",
+        id: "heat-fill",
         type: "fill",
-        source: "mask",
-        paint: { "fill-color": MASK_FILL, "fill-opacity": 1 },
+        source: "surface",
+        paint: {
+          "fill-color": colorExpr as never,
+          // Translucent so OSM streets/labels stay legible underneath.
+          "fill-opacity": 0.6,
+          // false removes the 1px antialiased seam between adjacent cells, so
+          // the grid reads as one smooth surface, not a visible lattice.
+          "fill-antialias": false,
+        },
       });
       map.addLayer({
         id: "state-outline",
@@ -324,15 +421,15 @@ export default function HeatmapPage() {
       }
     }
 
-    // Keep the weight ramp in sync with the current state's real min/max
-    // (date change re-fetches data with different values).
-    if (data && weightExpr && map.getLayer("heat-layer")) {
-      map.setPaintProperty("heat-layer", "heatmap-weight", weightExpr as never);
+    // Keep the fill color in sync with the current state+date's real min/max.
+    if (colorExpr && map.getLayer("heat-fill")) {
+      map.setPaintProperty("heat-fill", "fill-color", colorExpr as never);
     }
 
     // Re-fit to the STATE BOUNDARY's real extent (not the node bbox) whenever
-    // the state actually changes -- so pan/zoom frames the true shape, and a
-    // date-only change doesn't yank the view around.
+    // the state actually changes -- for a large state this deliberately frames
+    // the WHOLE state so its honestly-uncovered area is visible, not just the
+    // sampled patch. A date-only change never yanks the view.
     if (boundary && lastFittedKey.current !== boundary.properties?.state_key) {
       const [minX, minY, maxX, maxY] = bbox(boundary);
       map.fitBounds([[minX, minY], [maxX, maxY]], { padding: 40, duration: 600, maxZoom: 9 });
@@ -348,11 +445,11 @@ export default function HeatmapPage() {
       <h1 className="text-xl font-semibold mb-1">Real-time heat severity map</h1>
       <p className="text-sm text-gray-600 mb-4 max-w-2xl">
         Street-level heat forecast (STGCN) over the real NASA POWER grid for the selected state,
-        drawn as a smooth heat field clipped to the state&rsquo;s real border. The color is an
-        interpolated <em>rendering</em> of the real per-node forecasts -- the underlying numbers, and
-        everything pricing uses, stay the exact per-node values; only the picture between nodes is
-        smoothed (the standard way point-sampled fields like weather radar are mapped). mu-TEVI is
-        one state-level trigger index for the date.
+        drawn as a smooth inverse-distance-weighted surface clipped to the state&rsquo;s real border.
+        The color is an interpolated <em>rendering</em> of the real per-node forecasts -- the
+        underlying numbers, and everything pricing uses, stay the exact per-node values; only the
+        picture between nodes is smoothed (the standard way point-sampled fields like weather radar
+        are mapped). mu-TEVI is one state-level trigger index for the date.
       </p>
 
       {statesError && (
@@ -459,6 +556,14 @@ export default function HeatmapPage() {
         <span>Hotter (per-node STGCN shade-WBGT forecast)</span>
         <span className="ml-auto text-gray-400">Hover a node for its exact reading &middot; {OSM_ATTRIBUTION}</span>
       </div>
+
+      <p className="mt-2 text-xs text-gray-400 max-w-3xl">
+        The heat surface covers this state&rsquo;s anchor-metro sampled grid (the ~2&deg; NASA POWER
+        window in <code className="text-[11px]">config/state_anchors.yaml</code>), which for a large
+        state can be smaller than its full area -- that region is left uncovered rather than
+        extrapolated from unsampled distances. The anchor metro is taken as representative of the
+        state, per the Methodology tab.
+      </p>
     </main>
   );
 }

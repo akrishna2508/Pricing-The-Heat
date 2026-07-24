@@ -12,7 +12,9 @@
   },
   "dependencies": {
     "@turf/bbox": "^7.3.5",
-    "@turf/mask": "^7.3.5",
+    "@turf/boolean-point-in-polygon": "^7.3.5",
+    "@turf/interpolate": "^7.3.5",
+    "@turf/intersect": "^7.3.5",
     "maplibre-gl": "^4.7.1",
     "next": "^14.1.0",
     "react": "^18.3.1",
