@@ -90,6 +90,40 @@ def test_heatmap_without_trained_model_returns_503(monkeypatch, tmp_path):
     assert "not trained" in resp.json()["detail"]
 
 
+def _boundary_vertex_count(feat: dict) -> int:
+    g = feat["geometry"]
+    c = g["coordinates"]
+    if g["type"] == "Polygon":
+        return sum(len(ring) for ring in c)
+    if g["type"] == "MultiPolygon":
+        return sum(len(ring) for poly in c for ring in poly)
+    return 0
+
+
+def test_state_boundary_returns_real_polygon_gujarat():
+    resp = client.get("/state-boundary", params={"state_key": "IN-Gujarat"})
+    assert resp.status_code == 200
+    feat = resp.json()
+    assert feat["type"] == "Feature"
+    assert feat["geometry"]["type"] in {"Polygon", "MultiPolygon"}
+    assert feat["properties"]["state_key"] == "IN-Gujarat"
+    # Non-degenerate: a real state border, not an empty/point shape.
+    assert _boundary_vertex_count(feat) > 10
+
+
+def test_state_boundary_returns_real_polygon_arizona():
+    resp = client.get("/state-boundary", params={"state_key": "US-Arizona"})
+    assert resp.status_code == 200
+    feat = resp.json()
+    assert feat["geometry"]["type"] in {"Polygon", "MultiPolygon"}
+    assert _boundary_vertex_count(feat) > 10
+
+
+def test_state_boundary_unknown_state_key_is_404():
+    resp = client.get("/state-boundary", params={"state_key": "XX-Nowhere"})
+    assert resp.status_code == 404
+
+
 def test_resolve_location_happy_path_detects_real_state():
     resp = client.post("/resolve-location", json={"lat": PHOENIX_LAT, "lon": PHOENIX_LON})
     assert resp.status_code == 200

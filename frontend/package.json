@@ -11,6 +11,8 @@
     "test:e2e:playwright": "playwright test"
   },
   "dependencies": {
+    "@turf/bbox": "^7.3.5",
+    "@turf/mask": "^7.3.5",
     "maplibre-gl": "^4.7.1",
     "next": "^14.1.0",
     "react": "^18.3.1",

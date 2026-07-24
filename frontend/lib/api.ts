@@ -5,6 +5,7 @@ import type {
   ResolveLocationResponse,
   SimulatePolicyRequest,
   SimulatePolicyResponse,
+  StateBoundary,
   StateListEntry,
 } from "./types";
 
@@ -80,6 +81,11 @@ export function resolveLocation(body: ResolveLocationRequest): Promise<ResolveLo
 export function getHeatmap(stateKey: string, date?: string): Promise<HeatmapResponse> {
   const qs = new URLSearchParams({ state_key: stateKey, ...(date ? { date } : {}) });
   return request<HeatmapResponse>(`/heatmap?${qs.toString()}`);
+}
+
+export function getStateBoundary(stateKey: string): Promise<StateBoundary> {
+  const qs = new URLSearchParams({ state_key: stateKey });
+  return request<StateBoundary>(`/state-boundary?${qs.toString()}`);
 }
 
 export function simulatePolicy(body: SimulatePolicyRequest): Promise<SimulatePolicyResponse> {

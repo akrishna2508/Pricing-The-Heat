@@ -1,6 +1,12 @@
 // Types mirroring backend/main.py's Pydantic response models exactly -- kept
 // in one place so a backend schema change surfaces as a single TS diff here.
 
+import type { Feature, MultiPolygon, Polygon } from "geojson";
+
+// GET /state-boundary returns the raw admin-1 Feature verbatim -- Polygon OR
+// MultiPolygon (22 of 87 states are MultiPolygon), never coerced to one type.
+export type StateBoundary = Feature<Polygon | MultiPolygon>;
+
 export type CoverageMode = "configured" | "excluded" | "out_of_coverage";
 export type StateMode = "configured" | "excluded" | "unpriced";
 export type Frame = "income_smoothing" | "catastrophe_insurance";

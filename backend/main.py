@@ -48,7 +48,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from backend.data.geo_states import resolve_state
+from backend.data.geo_states import GEOJSON_PATH, resolve_state
 from backend.state_context import all_state_keys, get_context, state_exists
 from models.pricing.lsmc_pricer import LSMCPricer
 
@@ -93,6 +93,24 @@ _forecaster_cache: dict[str, Any] = {}
 # Lazy anomaly-detector handle (legacy single-city artifact), populated on
 # first /flag-anomaly call only.
 _anomaly_cache: dict[str, Any] = {}
+
+# Lazy map: state_key -> that state's raw GeoJSON boundary Feature, parsed once
+# from the SAME Natural Earth admin-1 file resolve_state uses (never a new/
+# derived boundary source). Populated on the first /state-boundary call.
+_boundary_cache: dict[str, dict] = {}
+
+
+def _load_boundaries() -> dict[str, dict]:
+    """Parse the admin-1 GeoJSON once, keyed by state_key. Each value is the
+    raw GeoJSON Feature verbatim -- Polygon OR MultiPolygon, whichever the
+    source data is (22 of the 87 admin-1 features are MultiPolygon, e.g.
+    coastal/island states) -- never coerced to a single assumed type.
+    """
+    if not _boundary_cache:
+        data = json.loads(GEOJSON_PATH.read_text())
+        for feat in data["features"]:
+            _boundary_cache[feat["properties"]["state_key"]] = feat
+    return _boundary_cache
 
 
 def _load_stgcn(state_key: str, ctx) -> tuple[Any, Any]:
@@ -601,6 +619,29 @@ def heatmap(state_key: str, date: str | None = None):
                     "state, not a per-node one.",
         },
     }
+
+
+# --- /state-boundary --------------------------------------------------------
+
+
+@app.get("/state-boundary")
+def state_boundary(state_key: str):
+    """Return state_key's REAL admin-1 boundary as a raw GeoJSON Feature
+    (Polygon or MultiPolygon, whichever the Natural Earth source is).
+
+    Reuses the exact same committed boundary file resolve_state reads
+    (data/raw/geo/admin1_in_us.geojson) -- no new or derived boundary source.
+    The frontend uses this only to CLIP and OUTLINE the heat overlay to the
+    state's true irregular shape; it is a cartographic boundary, never an
+    input to pricing.
+    """
+    feat = _load_boundaries().get(state_key)
+    if feat is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no boundary polygon on file for state_key {state_key!r}",
+        )
+    return feat
 
 
 # --- /forecast (Prompt 8, legacy single-city artifact) ----------------------
