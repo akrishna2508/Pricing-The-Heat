@@ -49,6 +49,15 @@ export type HeatmapResponse = {
     state: string;
     date: string;
     frame: Frame | null;
+    // "state" = real full-state forecast (inductive STGCN over fetched NASA
+    // POWER); "anchor" = the trained anchor-metro grid (also the honest
+    // fallback when a whole-state fetch fails / the state is too small).
+    coverage?: "state" | "anchor";
+    inductive_transfer?: boolean;
+    n_nodes?: number;
+    // On an anchor response: false means a whole-state view was requested but
+    // couldn't be served, so this is the honest anchor fallback.
+    whole_state_available?: boolean;
     note: string;
   };
 };

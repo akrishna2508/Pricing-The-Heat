@@ -50,6 +50,7 @@ from slowapi.util import get_remote_address
 
 from backend.data.geo_states import GEOJSON_PATH, resolve_state
 from backend.state_context import all_state_keys, get_context, state_exists
+from backend.state_heatmap import build_state_heatmap
 from models.pricing.lsmc_pricer import LSMCPricer
 
 limiter = Limiter(key_func=get_remote_address)
@@ -517,14 +518,20 @@ def explain(policy_id: str):
 
 
 @app.get("/heatmap")
-def heatmap(state_key: str, date: str | None = None):
-    """GeoJSON of state_key's real anchor-metro grid: each cell carries its
-    own STGCN-forecast heat_index (per-node shade-WBGT, degC) AND the
-    requested date's STATE-LEVEL mu_tevi (the fused index -- the SAME value
-    across every cell, since one mu-TEVI index covers the whole state; see
-    models.fusion.tevi). Viewable for ANY real state in the 79-state config,
-    including an excluded one (e.g. Alaska): the heat forecast is real and
-    trained regardless of whether the state cleared the pricing bar.
+def heatmap(state_key: str, date: str | None = None, coverage: str = "anchor"):
+    """GeoJSON of state_key's real STGCN heat forecast, per node.
+
+    coverage="anchor" (default, pricing-adjacent, UNCHANGED): the trained
+    anchor-metro grid on disk -- the exact grid every mu-TEVI/copula/contract
+    was calibrated on. coverage="state": the real full-state forecast, fetched
+    on demand from NASA POWER over the state's full border and run through the
+    SAME trained stgcn.pt inductively (see backend/state_heatmap.py). The
+    whole-state path is DISPLAY-ONLY and never touches pricing; on any fetch
+    failure it falls back to real anchor coverage (never fabricated fill).
+
+    Each cell also carries the requested date's ANCHOR-metro STATE-LEVEL mu_tevi
+    (the fused priced index -- the SAME value across every cell). Viewable for
+    ANY real state in the config, including an excluded one (e.g. Alaska).
     """
     if not state_exists(state_key):
         raise HTTPException(status_code=404, detail=f"unknown state_key {state_key!r}")
@@ -533,6 +540,20 @@ def heatmap(state_key: str, date: str | None = None):
     model, ckpt = _load_stgcn(state_key, ctx)
     if model is None:
         raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
+
+    # Whole-state display path: attempt the real full-state fetch + inductive
+    # forward. If it can't (fetch failure, or a state too small to hold grid
+    # nodes like DC), fall through to the real anchor grid below -- honestly,
+    # never with extrapolated fill.
+    state_fetch_attempted = False
+    if coverage == "state" and date is not None:
+        boundary_feat = _load_boundaries().get(state_key)
+        if boundary_feat is not None:
+            state_fetch_attempted = True
+            state_result = build_state_heatmap(
+                state_key, ctx, model, ckpt, pd.Timestamp(date), boundary_feat)
+            if state_result is not None:
+                return state_result
 
     weather_path = ctx.processed("weather.parquet")
     if not weather_path.exists():
@@ -612,6 +633,12 @@ def heatmap(state_key: str, date: str | None = None):
             "state": ctx.wage.get("state", state_key),
             "date": str(target.date()),
             "frame": frame,
+            # "anchor" = the trained anchor-metro grid. If a whole-state fetch was
+            # requested but couldn't be served (fetch failure, or a state too
+            # small to contain grid nodes), this is the honest real-anchor
+            # fallback -- flagged so the UI says so, never silently extrapolated.
+            "coverage": "anchor",
+            "whole_state_available": not state_fetch_attempted,
             "note": "heat_index is the per-node STGCN street-level heat forecast (shade-WBGT, "
                     "degC), one real value per grid cell -- it VARIES by node. mu_tevi is this "
                     "state's single state-level fused index for this date and is intentionally "

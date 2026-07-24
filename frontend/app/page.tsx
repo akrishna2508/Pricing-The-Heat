@@ -26,7 +26,11 @@ const OSM_ATTRIBUTION = "© OpenStreetMap contributors";
 // Roughly how many cells span the covered region's longest dimension. Adaptive
 // cell size = span / this, so a 0.2deg state (DC) and a 13deg state (Texas)
 // both get a smooth surface without one hardcoded cellSize serving neither.
-const CELLS_ACROSS = 48;
+// Raised from 48 -> 90 once coverage went whole-state (v2.7): at 48 a 13deg
+// state's cells were ~0.27deg and read as a visible lattice; ~0.15deg cells are
+// fine enough to look continuous. The corner-classification optimisation keeps
+// the added interior cells cheap (only border cells are polygon-clipped).
+const CELLS_ACROSS = 90;
 
 // Build the state-clipped IDW heat surface from the REAL per-node points.
 //
@@ -198,7 +202,10 @@ export default function HeatmapPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    getHeatmap(stateKey, date)
+    // Request the real full-state forecast; the backend falls back to real
+    // anchor coverage (never extrapolation) if the whole-state fetch fails or
+    // the state is too small to hold grid nodes -- the caption reflects which.
+    getHeatmap(stateKey, date, "state")
       .then((resp) => {
         if (!cancelled) setData(resp);
       })
@@ -439,17 +446,20 @@ export default function HeatmapPage() {
 
   const stateMuTevi = data?.features[0]?.properties.mu_tevi ?? null;
   const frame = data?.metadata.frame ?? null;
+  // Whether the served surface is the real full-state forecast or the honest
+  // anchor-metro fallback (whole-state fetch failed, or state too small).
+  const coverage = data?.metadata.coverage ?? null;
 
   return (
     <main className="max-w-6xl mx-auto p-4 sm:p-6">
       <h1 className="text-xl font-semibold mb-1">Real-time heat severity map</h1>
       <p className="text-sm text-gray-600 mb-4 max-w-2xl">
-        Street-level heat forecast (STGCN) over the real NASA POWER grid for the selected state,
-        drawn as a smooth inverse-distance-weighted surface clipped to the state&rsquo;s real border.
-        The color is an interpolated <em>rendering</em> of the real per-node forecasts -- the
-        underlying numbers, and everything pricing uses, stay the exact per-node values; only the
-        picture between nodes is smoothed (the standard way point-sampled fields like weather radar
-        are mapped). mu-TEVI is one state-level trigger index for the date.
+        Real full-state heat forecast (STGCN over live NASA POWER weather), drawn as a smooth
+        inverse-distance-weighted surface clipped to the state&rsquo;s real border. The color is an
+        interpolated <em>rendering</em> of the real per-node forecasts -- the underlying numbers stay
+        the exact per-node values; only the picture between nodes is smoothed (the standard way
+        point-sampled fields like weather radar are mapped). mu-TEVI, the priced index, is one
+        state-level trigger from the anchor-metro grid -- a deliberately different extent (see below).
       </p>
 
       {statesError && (
@@ -516,7 +526,8 @@ export default function HeatmapPage() {
 
         {loading && (
           <span className="text-xs text-gray-400">
-            Loading... (first load can take up to a minute if the server is waking up)
+            Fetching real whole-state weather... (a large state&rsquo;s first load can take ~10-30s;
+            it&rsquo;s cached after)
           </span>
         )}
       </div>
@@ -557,13 +568,21 @@ export default function HeatmapPage() {
         <span className="ml-auto text-gray-400">Hover a node for its exact reading &middot; {OSM_ATTRIBUTION}</span>
       </div>
 
-      <p className="mt-2 text-xs text-gray-400 max-w-3xl">
-        The heat surface covers this state&rsquo;s anchor-metro sampled grid (the ~2&deg; NASA POWER
-        window in <code className="text-[11px]">config/state_anchors.yaml</code>), which for a large
-        state can be smaller than its full area -- that region is left uncovered rather than
-        extrapolated from unsampled distances. The anchor metro is taken as representative of the
-        state, per the Methodology tab.
-      </p>
+      {coverage === "state" ? (
+        <p className="mt-2 text-xs text-gray-400 max-w-3xl">
+          The heat surface is the real full-state forecast: live NASA POWER weather fetched across
+          the whole state, run through the same trained STGCN applied inductively to the wider grid.
+          The priced <span className="font-mono">mu-TEVI</span> index and the premium, by contrast,
+          come from the anchor-metro grid the model was calibrated on -- two different real extents,
+          deliberately, not an inconsistency.
+        </p>
+      ) : (
+        <p className="mt-2 text-xs text-amber-700 max-w-3xl">
+          Showing this state&rsquo;s real anchor-metro grid: the whole-state forecast isn&rsquo;t
+          available here (the live fetch didn&rsquo;t return, or the state is smaller than a NASA
+          POWER grid cell). The surface stops at real data and is never extrapolated to fill the rest.
+        </p>
+      )}
     </main>
   );
 }

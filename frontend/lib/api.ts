@@ -78,8 +78,12 @@ export function resolveLocation(body: ResolveLocationRequest): Promise<ResolveLo
   });
 }
 
-export function getHeatmap(stateKey: string, date?: string): Promise<HeatmapResponse> {
-  const qs = new URLSearchParams({ state_key: stateKey, ...(date ? { date } : {}) });
+export function getHeatmap(
+  stateKey: string,
+  date?: string,
+  coverage: "anchor" | "state" = "anchor",
+): Promise<HeatmapResponse> {
+  const qs = new URLSearchParams({ state_key: stateKey, coverage, ...(date ? { date } : {}) });
   return request<HeatmapResponse>(`/heatmap?${qs.toString()}`);
 }
 

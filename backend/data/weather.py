@@ -94,13 +94,24 @@ class WeatherLoader:
         self.bbox = bbox
         self.cache_dir = Path(cache_dir)
 
-    def fetch_daily(self, start: str = "20140101", end: str = "20231231") -> pd.DataFrame:
+    def fetch_daily(
+        self, start: str = "20140101", end: str = "20231231",
+        tile_deg: float = MIN_DEGREES_PER_TILE,
+    ) -> pd.DataFrame:
         """Fetch T2M and RH2M separately (regional = one parameter/call),
-        tiling over both time (<366-day chunks) and space (>=2deg tiles),
+        tiling over both time (<366-day chunks) and space (tiles of `tile_deg`),
         merged on (node_id, date). -999 cells are left as MODE B gaps for
         fill_gaps() to resolve.
+
+        `tile_deg` is the spatial tile size. It defaults to the 2deg regional-API
+        MINIMUM span (used by the training pipeline's single-anchor fetches). The
+        whole-state display path (backend/state_heatmap.py) passes a LARGER tile
+        (5deg -> ~80 grid points, safely under the API's 100-point-per-call cap
+        and above the 2deg floor) so a big state needs far fewer requests -- same
+        regional endpoint and tiling function, just a different valid tile size,
+        not new fetch semantics.
         """
-        tiles = _spatial_tiles(self.bbox)
+        tiles = _spatial_tiles(self.bbox, tile_deg)
         chunks = _date_chunks(start, end)
 
         param_frames: dict[str, pd.DataFrame] = {}

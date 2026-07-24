@@ -130,9 +130,16 @@ export default function MethodologyPage() {
         <h2 className="text-base font-semibold mb-2">1. Where the heat comes from</h2>
         <p className="text-sm text-gray-700 leading-relaxed">
           A small graph neural network (an STGCN, spatio-temporal graph convolution) forecasts
-          street-level heat (shade-WBGT) at every real weather-station grid cell around each state&rsquo;s
-          anchor metro, from NASA POWER&rsquo;s public API -- no synthetic weather anywhere in the
-          pipeline.
+          street-level heat (shade-WBGT) at every real weather-station grid cell, from NASA
+          POWER&rsquo;s public API -- no synthetic weather anywhere in the pipeline. The model is{" "}
+          <strong>trained</strong> on each state&rsquo;s ~2&deg; anchor-metro grid (a compute-scoping
+          choice that keeps all 79 states laptop-trainable), and every priced quantity -- mu-TEVI,
+          the copula, the contract, the premium -- is calibrated on that same anchor grid. The heat{" "}
+          <em>map</em>, however, shows the real <strong>full-state</strong> forecast: because the
+          STGCN&rsquo;s weights carry no fixed node count, the trained model is applied inductively to
+          live NASA POWER weather fetched across the whole state. So the map and the price cover two
+          different real extents on purpose -- the full state for visualization, the anchor metro
+          (taken as representative) for the calibrated price.
         </p>
       </section>
 
