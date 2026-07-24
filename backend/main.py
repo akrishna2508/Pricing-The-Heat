@@ -1,36 +1,46 @@
-"""FastAPI backend exposing the pipeline as a service (Prompt 7; /forecast and
-/flag-anomaly wired to real models in Prompt 8; /assistant/ask wired to a
-grounded Claude assistant in Prompt 9).
+"""FastAPI backend exposing the per-state pipeline as a service (v2 state-wise
+rewrite -- replaces the v1 single-city Ahmedabad API; /forecast and
+/flag-anomaly still serve the legacy single-city artifacts, out of scope here).
 
-PRODUCT FRAMING (carried from Prompt 6b, non-negotiable everywhere in this
-module): the peril is chronic -- outdoor workers lose wages on ~66% of
-worker-days -- and 0 of 36 grid points in the contract-design sweep behaved
-like catastrophe insurance. This is HIGH-FREQUENCY INCOME SMOOTHING, never
-"catastrophe insurance", in every user-facing string, field name, and response.
+PRODUCT FRAMING (carried from Prompt 6b, now PER-STATE, never assumed): each
+state's frame -- "income_smoothing" (chronic, high-frequency peril) or
+"catastrophe_insurance" (rare, extreme peril) -- is read from that state's own
+`models/artifacts/<state_key>/contract.json`, discovered from its real climate
+regime by backend/backtest/contract_design.py's sweep. Never hardcode a frame
+here; a temperate state and an extreme-heat state can legitimately differ.
 
-CONTRACT: strike=75, window=14 days, read from backend/config.py's
-load_contract_config() (backed by backend/data/cities.yaml's `contract:`
-section) -- NEVER hardcoded here, so the API and the backtest cannot drift.
+STATE NAMESPACING: every route resolves a `state_key` (either given directly
+or detected from lat/lon via backend/data/geo_states.resolve_state, offline
+Natural Earth polygons -- no geocoding API) and then loads that state's own
+context via backend/state_context.get_context: its wage schedule + currency
+(config/wages_by_state.yaml), its anchor-metro weather grid
+(config/state_anchors.yaml), and its own trained artifacts
+(models/artifacts/<state_key>/). CURRENCY IS NEVER CONVERTED.
+
+THREE COVERAGE MODES, always distinguished honestly (never a fabricated
+price): "configured" (in the 78 priced states), "excluded" (a real state that
+failed the coverage bar -- e.g. Alaska, too few heat-exposure days --
+reason read from its excluded.json marker), "out_of_coverage" (outside
+India/US, or a real admin-1 region not in the 79 configured states).
 
 LAZY MODEL LOADING: no *.pt / copula.json / mu_tevi.parquet is read at import
-time -- only inside request handlers -- so this module (and CI) can import
-`app` with zero trained artifacts on disk. A missing artifact returns 503
-rather than crashing.
+time -- only inside request handlers, cached per state_key -- so this module
+(and CI) can import `app` with zero trained artifacts on disk. A missing
+artifact returns 503 rather than crashing.
 
 PRIVACY: lat/lon travel ONLY in POST bodies (never a query string), are used
-transiently to resolve a city, and are never logged or persisted -- only the
-resolved city name is retained (in the in-memory policy cache and responses).
+transiently to resolve a state, and are never logged or persisted -- only the
+resolved state_key is retained (in the in-memory policy cache and responses).
 """
 
+import json
 import os
 import uuid
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
-import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -38,15 +48,13 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from backend.assistant import service as assistant_service
-from backend.config import load_contract_config
-from backend.data.location import resolve_city
-from backend.data.wages import WageLoader
+from backend.data.geo_states import resolve_state
+from backend.state_context import all_state_keys, get_context, state_exists
 from models.pricing.lsmc_pricer import LSMCPricer
 
 limiter = Limiter(key_func=get_remote_address)
 
-app = FastAPI(title="Pricing the Heat", version="0.8.0")
+app = FastAPI(title="Pricing the Heat", version="2.0.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -65,68 +73,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CITIES_YAML_PATH = Path(__file__).parent / "data" / "cities.yaml"
-MU_TEVI_PATH = Path("data/processed/mu_tevi.parquet")
-STGCN_PATH = Path("models/artifacts/stgcn.pt")
-FORECASTER_PATH = Path("models/artifacts/forecaster.pt")
-ANOMALY_PATH = Path("models/artifacts/anomaly.pkl")
+FORECASTER_PATH = "models/artifacts/forecaster.pt"
+ANOMALY_PATH = "models/artifacts/anomaly.pkl"
 
-MODEL_NOT_TRAINED_DETAIL = "model artifact not trained yet — run make train"
-
-CONTRACT = load_contract_config()          # {"strike", "window_days", "product_type"}
-PRODUCT_TYPE = CONTRACT["product_type"]    # "income_smoothing" -- never "catastrophe_insurance".
+MODEL_NOT_TRAINED_DETAIL = "model artifact not trained yet — run make train / make train-all-states"
 
 # In-memory cache: policy_id -> everything /explain needs to reconstruct the
 # pricer and re-derive an explanation. No DB required (Prompt 7's rule).
 _policy_cache: dict[str, dict[str, Any]] = {}
 
-# Lazy STGCN handle, populated on first /heatmap call only.
-_stgcn_cache: dict[str, Any] = {}
+# Lazy STGCN handles, one per state_key, populated on first /heatmap call for
+# that state.
+_stgcn_cache: dict[str, dict[str, Any]] = {}
 
-# Lazy GRU forecaster handle, populated on first /forecast call only.
+# Lazy GRU forecaster handle (legacy single-city artifact), populated on first
+# /forecast call only.
 _forecaster_cache: dict[str, Any] = {}
 
-# Lazy anomaly-detector handle, populated on first /flag-anomaly call only.
+# Lazy anomaly-detector handle (legacy single-city artifact), populated on
+# first /flag-anomaly call only.
 _anomaly_cache: dict[str, Any] = {}
 
 
-def _load_cities_config() -> dict:
-    with open(CITIES_YAML_PATH) as f:
-        return yaml.safe_load(f)
+def _load_stgcn(state_key: str, ctx) -> tuple[Any, Any]:
+    """Lazily loads state_key's trained STGCN checkpoint. (None, None) if untrained."""
+    cached = _stgcn_cache.get(state_key)
+    if cached is not None:
+        return cached["model"], cached["ckpt"]
 
-
-def _load_pricer() -> LSMCPricer | None:
-    """Lazily loads the frozen LSMC pricer from copula.json. None if untrained."""
-    try:
-        return LSMCPricer.from_copula_json()
-    except FileNotFoundError:
-        return None
-
-
-def _load_stgcn():
-    """Lazily loads the trained STGCN checkpoint. (None, None) if untrained."""
-    if "model" in _stgcn_cache:
-        return _stgcn_cache["model"], _stgcn_cache["ckpt"]
-    if not STGCN_PATH.exists():
+    stgcn_path = ctx.artifact("stgcn.pt")
+    if not stgcn_path.exists():
         return None, None
 
     import torch
 
     from models.stgcn.model import STGCN
 
-    # STGCN_PATH is a fixed, server-authored constant (never derived from any
-    # request parameter), so this never deserializes attacker-controlled
-    # input; weights_only=False is required because the checkpoint carries
+    # stgcn_path is derived only from a validated state_key (checked against
+    # state_exists before this is ever called), never from arbitrary request
+    # text, so this never deserializes attacker-controlled input;
+    # weights_only=False is required because the checkpoint carries
     # non-tensor config/graph data alongside the state_dict (see
     # models/stgcn/train.py). See SECURITY.md.
-    ckpt = torch.load(STGCN_PATH, map_location="cpu", weights_only=False)  # nosec B614
+    ckpt = torch.load(stgcn_path, map_location="cpu", weights_only=False)  # nosec B614
     cfg = ckpt["config"]
     model = STGCN(in_channels=cfg["in_channels"], hidden=cfg["hidden"], horizon=cfg["horizon"],
                   t_in=cfg["t_in"], k_order=cfg["k_order"], kernel_size=cfg["kernel_size"])
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
-    _stgcn_cache["model"] = model
-    _stgcn_cache["ckpt"] = ckpt
+    _stgcn_cache[state_key] = {"model": model, "ckpt": ckpt}
     return model, ckpt
 
 
@@ -135,7 +130,43 @@ def health_check():
     return {"status": "ok"}
 
 
-# --- /resolve-location -----------------------------------------------------
+# --- /states ------------------------------------------------------------
+
+
+class StateListEntry(BaseModel):
+    state_key: str
+    state: str
+    country: str
+    currency: str
+    metro: str
+    mode: str  # "configured" | "excluded" | "unpriced"
+
+
+@app.get("/states", response_model=list[StateListEntry])
+def list_states():
+    """Every state in the real config (79 total: 78 priced + Alaska excluded),
+    with its real currency/metro/mode -- the single source of truth the
+    frontend's state selectors read from, never hand-duplicated in the UI.
+    Only checks file EXISTENCE (contract.json / excluded.json), never loads
+    model weights, so this stays cheap and eager.
+    """
+    out = []
+    for key in all_state_keys():
+        ctx = get_context(key)
+        if ctx.artifact("excluded.json").exists():
+            mode = "excluded"
+        elif ctx.artifact("contract.json").exists():
+            mode = "configured"
+        else:
+            mode = "unpriced"
+        out.append(StateListEntry(
+            state_key=key, state=ctx.wage.get("state", key), country=ctx.country,
+            currency=ctx.currency, metro=ctx.metro, mode=mode,
+        ))
+    return out
+
+
+# --- /resolve-location ----------------------------------------------------
 
 
 class ResolveLocationRequest(BaseModel):
@@ -144,24 +175,55 @@ class ResolveLocationRequest(BaseModel):
 
 
 class ResolveLocationResponse(BaseModel):
-    city_key: str
-    city: str
-    distance_km: float
-    mode: str
+    country: str | None = None
+    state: str | None = None
+    state_key: str | None = None
+    currency: str | None = None
+    mode: str  # "configured" | "excluded" | "out_of_coverage"
     message: str | None = None
+
+
+def _resolve_and_classify(lat: float, lon: float) -> dict:
+    """Resolve (lat, lon) to a real state, then classify it into one of the
+    three honest coverage modes. Never fabricates a price/state for a point
+    outside real coverage -- see module docstring.
+    """
+    geo = resolve_state(lat, lon)
+    if geo["mode"] == "out_of_coverage":
+        return {"mode": "out_of_coverage", "message": geo["message"]}
+
+    state_key = geo["state_key"]
+    if not state_exists(state_key):
+        return {
+            "mode": "out_of_coverage",
+            "message": f"{geo['state']}, {geo['country']} was detected but is not in the "
+                       f"currently priced 79-state set.",
+        }
+
+    ctx = get_context(state_key)
+    if ctx.artifact("excluded.json").exists():
+        reason = json.loads(ctx.artifact("excluded.json").read_text())["reason"]
+        return {"mode": "excluded", "state_key": state_key, "state": geo["state"],
+                "country": geo["country"], "currency": ctx.currency, "message": reason}
+    if not ctx.artifact("contract.json").exists():
+        return {"mode": "out_of_coverage", "state_key": state_key, "state": geo["state"],
+                "country": geo["country"],
+                "message": f"{geo['state']}, {geo['country']} is in the configured set but its "
+                           f"pricing pipeline has not finished training yet."}
+
+    return {"mode": "configured", "state_key": state_key, "state": geo["state"],
+            "country": geo["country"], "currency": ctx.currency}
 
 
 @app.post("/resolve-location", response_model=ResolveLocationResponse)
 def resolve_location(req: ResolveLocationRequest):
-    """Resolve a real GPS coordinate to the nearest configured city.
-
-    lat/lon travel ONLY in this POST body (never a query string) and are used
-    transiently for distance computation -- never logged or persisted. An
-    out-of-coverage point gets an honest message and the nearest city; no
-    pricing/weather is ever fabricated for it.
+    """Resolve a real GPS coordinate to its real state (offline Natural Earth
+    point-in-polygon -- no geocoding API, no key). lat/lon travel ONLY in this
+    POST body (never a query string) and are used transiently -- never logged
+    or persisted. An out-of-coverage or excluded point gets an honest message;
+    nothing is ever fabricated for it.
     """
-    cities_cfg = _load_cities_config()
-    result = resolve_city(req.lat, req.lon, cities_cfg)
+    result = _resolve_and_classify(req.lat, req.lon)
     return ResolveLocationResponse(**result)
 
 
@@ -174,6 +236,7 @@ class DateRange(BaseModel):
 
 
 class SimulatePolicyRequest(BaseModel):
+    state_key: str | None = None
     occupation: str = "vendor"
     date_range: DateRange
     lat: float | None = None
@@ -187,101 +250,135 @@ class BasisRiskBlock(BaseModel):
     correlation: float
 
 
+class WageProvenanceBlock(BaseModel):
+    state: str
+    occupation: str
+    value: float
+    currency: str
+    source_url: str | None = None
+    confidence: str | None = None
+    note: str | None = None
+
+
 class SimulatePolicyResponse(BaseModel):
     policy_id: str
-    product_type: str = PRODUCT_TYPE
-    coverage_mode: str
-    resolved_city: str | None = None
-    distance_km: float | None = None
+    coverage_mode: str  # "configured" | "excluded" | "out_of_coverage"
+    country: str | None = None
+    state: str | None = None
+    state_key: str | None = None
+    currency: str | None = None
+    frame: str | None = None  # "income_smoothing" | "catastrophe_insurance"
+    strike: float | None = None
+    window_days: int | None = None
     occupation: str | None = None
     premium_lsmc: float | None = None
     premium_wang: float | None = None
     payout_schedule: dict | None = None
     mu_tevi_series: list[dict] | None = None
     basis_risk: BasisRiskBlock | None = None
+    wage_provenance: WageProvenanceBlock | None = None
     message: str | None = None
     note: str
-
-
-def _resolve_for_request(cities_cfg: dict, lat: float | None, lon: float | None) -> dict:
-    """Resolve a city from body-only lat/lon; falls back to the default city.
-
-    Coordinates are NEVER accepted from a query string -- only Pydantic body
-    fields reach here at all, so a query-string lat/lon is silently ignored by
-    construction, not merely rejected after the fact.
-    """
-    if lat is not None and lon is not None:
-        return resolve_city(lat, lon, cities_cfg)
-    key = cities_cfg["default_city"]
-    city = cities_cfg["cities"][key]
-    return {"city_key": key, "city": city["name"], "distance_km": None, "mode": "configured"}
 
 
 @app.post("/simulate-policy", response_model=SimulatePolicyResponse)
 @limiter.limit("30/minute")
 def simulate_policy(req: SimulatePolicyRequest, request: Request):
-    """Price the income-smoothing contract (strike/window from backend/config.py)
-    for a resolved city + occupation + real coverage window.
+    """Price this state's own contract (frame/strike/window from its real
+    contract.json) for a resolved state + occupation + real coverage window.
 
     Surfaces basis_risk as a first-class HONESTY feature (Prompt 6b, carried
     constraint D): the gap between the index-triggered payout and the
     worker's modeled loss, not hidden inside a single headline number.
     """
     policy_id = str(uuid.uuid4())
-    cities_cfg = _load_cities_config()
-    resolved = _resolve_for_request(cities_cfg, req.lat, req.lon)
 
-    if resolved["mode"] == "out_of_coverage":
+    if req.state_key:
+        if not state_exists(req.state_key):
+            raise HTTPException(status_code=400, detail=f"unknown state_key {req.state_key!r}")
+        state_key = req.state_key
+    elif req.lat is not None and req.lon is not None:
+        geo = _resolve_and_classify(req.lat, req.lon)
+        if geo["mode"] != "configured":
+            _policy_cache[policy_id] = {"window_days": None}
+            note = (
+                "No pricing computed: this state is excluded from pricing (insufficient "
+                "heat-exposure signal). No data was fabricated."
+                if geo["mode"] == "excluded" else
+                "No pricing computed: location is outside the priced coverage set. "
+                "No data was fabricated for this point."
+            )
+            return SimulatePolicyResponse(
+                policy_id=policy_id, coverage_mode=geo["mode"],
+                country=geo.get("country"), state=geo.get("state"), state_key=geo.get("state_key"),
+                currency=geo.get("currency"), message=geo.get("message"), note=note,
+            )
+        state_key = geo["state_key"]
+    else:
+        raise HTTPException(status_code=400, detail="must supply either state_key or lat/lon")
+
+    ctx = get_context(state_key)
+
+    if ctx.artifact("excluded.json").exists():
+        reason = json.loads(ctx.artifact("excluded.json").read_text())["reason"]
         _policy_cache[policy_id] = {"window_days": None}
         return SimulatePolicyResponse(
-            policy_id=policy_id,
-            coverage_mode=resolved["mode"],
-            resolved_city=resolved["city"],
-            distance_km=resolved.get("distance_km"),
-            message=resolved.get("message"),
-            note="No pricing computed: location is outside covered cities. "
-                 "No data was fabricated for this point.",
+            policy_id=policy_id, coverage_mode="excluded", state_key=state_key,
+            state=ctx.wage.get("state", state_key), country=ctx.country, currency=ctx.currency,
+            message=reason,
+            note="No pricing computed: this state is excluded from pricing (insufficient "
+                 "heat-exposure signal). No data was fabricated.",
         )
 
-    pricer = _load_pricer()
-    if pricer is None:
+    contract_path = ctx.artifact("contract.json")
+    copula_path = ctx.artifact("copula.json")
+    if not contract_path.exists() or not copula_path.exists():
         raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
+    contract = json.loads(contract_path.read_text())
 
-    wage_loader = WageLoader(country_iso3=cities_cfg["cities"][resolved["city_key"]]["country_iso3"])
-    baseline_wages = wage_loader.occupation_baseline_wages(city_key=resolved["city_key"])
-    if req.occupation not in baseline_wages:
+    wages = ctx.daily_wages()
+    if req.occupation not in wages:
         raise HTTPException(
             status_code=400,
-            detail=f"unknown occupation '{req.occupation}'; have {sorted(baseline_wages)}",
+            detail=f"unknown occupation '{req.occupation}'; have {sorted(wages)}",
         )
 
-    window_days = int(CONTRACT["window_days"])
+    window_days = int(contract["window_days"])
     if req.date_range.end < req.date_range.start:
         raise HTTPException(status_code=400, detail="date_range.end must be >= date_range.start")
 
-    if not MU_TEVI_PATH.exists():
+    mu_tevi_path = ctx.processed("mu_tevi.parquet")
+    if not mu_tevi_path.exists():
         raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
-    city_index = pd.read_parquet(MU_TEVI_PATH).sort_values("ts").reset_index(drop=True)
+    state_index = pd.read_parquet(mu_tevi_path).sort_values("ts").reset_index(drop=True)
     start_ts = pd.Timestamp(req.date_range.start)
-    window_df = city_index[city_index["ts"] >= start_ts].head(window_days)
+    window_df = state_index[state_index["ts"] >= start_ts].head(window_days)
     if len(window_df) < window_days:
         raise HTTPException(
             status_code=404,
             detail=f"real mu-TEVI data does not cover a full {window_days}-day window "
-                   f"starting {req.date_range.start}; no data was fabricated to fill it",
+                   f"starting {req.date_range.start} for {state_key}; no data was fabricated to fill it",
         )
 
+    pricer = LSMCPricer.from_copula_json(path=copula_path, strike=contract["strike"], cap=contract["cap"])
+    wage_value = float(wages[req.occupation])
     window_values = window_df["mu_tevi"].to_numpy()
-    result = pricer.price_window(window_values, req.occupation)
+    result = pricer.price_window(window_values, req.occupation, wage=wage_value)
+
+    prov = ctx.wage_provenance()
+    wage_provenance = WageProvenanceBlock(
+        state=prov["state"], occupation=req.occupation, value=wage_value, currency=prov["currency"],
+        source_url=prov.get("source_url"), confidence=prov.get("confidence"), note=prov.get("note"),
+    )
 
     _policy_cache[policy_id] = {
+        "state_key": state_key,
         "occupation": req.occupation,
         "window_days": window_days,
         "strike": pricer.strike,
         "cap": pricer.cap,
-        "city_key": resolved["city_key"],
-        # Cached verbatim so /assistant/ask's get_policy_state tool (Prompt 9)
-        # is grounded on the SAME values this response returned, not a re-run.
+        # Cached verbatim so /explain's surrogate is grounded on the SAME
+        # contract this response returned, not a re-derived one.
         "premium_lsmc": result["premium_lsmc"],
         "premium_wang": result["premium_wang"],
         "payout_schedule": result["payout_schedule"],
@@ -290,9 +387,14 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
 
     return SimulatePolicyResponse(
         policy_id=policy_id,
-        coverage_mode=resolved["mode"],
-        resolved_city=resolved["city"],
-        distance_km=resolved.get("distance_km"),
+        coverage_mode="configured",
+        country=ctx.country,
+        state=prov["state"],
+        state_key=state_key,
+        currency=ctx.currency,
+        frame=contract["frame"],
+        strike=contract["strike"],
+        window_days=window_days,
         occupation=req.occupation,
         premium_lsmc=result["premium_lsmc"],
         premium_wang=result["premium_wang"],
@@ -302,12 +404,14 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
             for _, row in window_df.iterrows()
         ],
         basis_risk=BasisRiskBlock(**result["basis_risk"]),
+        wage_provenance=wage_provenance,
         note=(
-            f"Priced as high-frequency income smoothing (not cover for a rare, one-off "
-            f"disaster): a {window_days}-day coverage window at strike {pricer.strike:.0f} "
-            f"mu-TEVI, starting {req.date_range.start}. basis_risk reports how often the "
-            f"index under/over-pays the worker's own modeled loss -- inherent to any "
-            f"parametric product, surfaced honestly rather than hidden."
+            f"Priced as {contract['frame'].replace('_', ' ')} -- this state's frame is "
+            f"discovered from its own real climate regime, never assumed globally: a "
+            f"{window_days}-day coverage window at strike {contract['strike']:.2f} mu-TEVI, "
+            f"starting {req.date_range.start}. basis_risk reports how often the index "
+            f"under/over-pays the worker's own modeled loss -- inherent to any parametric "
+            f"product, surfaced honestly rather than hidden."
         ),
     )
 
@@ -377,11 +481,13 @@ def explain(policy_id: str):
     if cached.get("window_days") is None:
         raise HTTPException(
             status_code=404,
-            detail="policy has no priced contract to explain (out-of-coverage / unpriced)",
+            detail="policy has no priced contract to explain (out-of-coverage / excluded)",
         )
 
+    ctx = get_context(cached["state_key"])
     try:
-        pricer = LSMCPricer.from_copula_json(strike=cached["strike"], cap=cached["cap"])
+        pricer = LSMCPricer.from_copula_json(
+            path=ctx.artifact("copula.json"), strike=cached["strike"], cap=cached["cap"])
     except FileNotFoundError:
         raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
 
@@ -393,21 +499,32 @@ def explain(policy_id: str):
 
 
 @app.get("/heatmap")
-def heatmap(date: str | None = None):
-    """GeoJSON of the real grid: each cell carries its own STGCN-forecast
-    heat_index (per-node shade-WBGT, degC) AND the requested date's
-    CITY-LEVEL mu_tevi (the fused index -- the SAME value across every cell,
-    since one mu-TEVI index covers the whole city; see models.fusion.tevi).
+def heatmap(state_key: str, date: str | None = None):
+    """GeoJSON of state_key's real anchor-metro grid: each cell carries its
+    own STGCN-forecast heat_index (per-node shade-WBGT, degC) AND the
+    requested date's STATE-LEVEL mu_tevi (the fused index -- the SAME value
+    across every cell, since one mu-TEVI index covers the whole state; see
+    models.fusion.tevi). Viewable for ANY real state in the 79-state config,
+    including an excluded one (e.g. Alaska): the heat forecast is real and
+    trained regardless of whether the state cleared the pricing bar.
     """
-    model, ckpt = _load_stgcn()
+    if not state_exists(state_key):
+        raise HTTPException(status_code=404, detail=f"unknown state_key {state_key!r}")
+    ctx = get_context(state_key)
+
+    model, ckpt = _load_stgcn(state_key, ctx)
     if model is None:
+        raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
+
+    weather_path = ctx.processed("weather.parquet")
+    if not weather_path.exists():
         raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
 
     import torch
 
-    from models.stgcn.train import load_weather, to_node_time_matrix
+    from models.stgcn.train import to_node_time_matrix
 
-    weather = load_weather()
+    weather = pd.read_parquet(weather_path)
     arr, node_ids_current, _coords = to_node_time_matrix(weather)
     dates_sorted = sorted(weather["date"].unique())
 
@@ -418,7 +535,7 @@ def heatmap(date: str | None = None):
         if target not in dates_sorted:
             raise HTTPException(
                 status_code=404,
-                detail=f"date {date} is not covered by the real weather data on disk",
+                detail=f"date {date} is not covered by {state_key}'s real weather data on disk",
             )
 
     node_order = ckpt["graph"]["node_ids"]
@@ -444,11 +561,17 @@ def heatmap(date: str | None = None):
     heat_index = pred[:, 0] * sigma + mu    # first horizon day == `target`
 
     mu_tevi_value = None
-    if MU_TEVI_PATH.exists():
-        city_index = pd.read_parquet(MU_TEVI_PATH)
-        row = city_index[city_index["ts"] == target]
+    mu_tevi_path = ctx.processed("mu_tevi.parquet")
+    if mu_tevi_path.exists():
+        state_index = pd.read_parquet(mu_tevi_path)
+        row = state_index[state_index["ts"] == target]
         if not row.empty:
             mu_tevi_value = float(row["mu_tevi"].iloc[0])
+
+    frame = None
+    contract_path = ctx.artifact("contract.json")
+    if contract_path.exists():
+        frame = json.loads(contract_path.read_text())["frame"]
 
     coords = ckpt["graph"]["coords"]
     features = [
@@ -467,24 +590,27 @@ def heatmap(date: str | None = None):
         "type": "FeatureCollection",
         "features": features,
         "metadata": {
+            "state_key": state_key,
+            "state": ctx.wage.get("state", state_key),
             "date": str(target.date()),
-            "product_type": PRODUCT_TYPE,
-            "note": "heat_index is the per-node STGCN shade-WBGT forecast (degC), one value "
-                    "per real grid cell. mu_tevi is the CITY-LEVEL fused index and is "
-                    "IDENTICAL across every cell for this date -- there is one contract "
-                    "trigger for the whole city, not a per-node one.",
+            "frame": frame,
+            "note": "heat_index is the per-node STGCN street-level heat forecast (shade-WBGT, "
+                    "degC), one real value per grid cell -- it VARIES by node. mu_tevi is this "
+                    "state's single state-level fused index for this date and is intentionally "
+                    "IDENTICAL across every cell -- there is one contract trigger for the whole "
+                    "state, not a per-node one.",
         },
     }
 
 
-# --- /forecast (Prompt 8) ---------------------------------------------------
+# --- /forecast (Prompt 8, legacy single-city artifact) ----------------------
 
 
 def _load_forecaster():
     """Lazily loads the trained GRU forecaster checkpoint. (None, None) if untrained."""
     if "model" in _forecaster_cache:
         return _forecaster_cache["model"], _forecaster_cache["ckpt"]
-    if not FORECASTER_PATH.exists():
+    if not os.path.exists(FORECASTER_PATH):
         return None, None
 
     import torch
@@ -492,8 +618,8 @@ def _load_forecaster():
     from models.forecast.model import GRUForecaster
 
     # FORECASTER_PATH is a fixed, server-authored constant (never derived
-    # from any request parameter); see the identical rationale on
-    # STGCN_PATH's torch.load above, and SECURITY.md.
+    # from any request parameter); see the identical rationale on the
+    # STGCN torch.load above, and SECURITY.md.
     ckpt = torch.load(FORECASTER_PATH, map_location="cpu", weights_only=False)  # nosec B614
     cfg = ckpt["config"]
     model = GRUForecaster(input_size=cfg["input_size"], hidden=cfg["hidden"], horizon=cfg["horizon"])
@@ -506,10 +632,10 @@ def _load_forecaster():
 
 @app.get("/forecast")
 def forecast(horizon_days: int = 7):
-    """GRU forecast of the city-level mu-TEVI index, `horizon_days` ahead of
-    the most recent real day on disk. Surfaces the training-time validation
-    comparison against a persistence baseline (Prompt 8's honesty requirement)
-    on every call, not just at training time.
+    """GRU forecast of the (legacy single-city) mu-TEVI index, `horizon_days`
+    ahead of the most recent real day on disk. Surfaces the training-time
+    validation comparison against a persistence baseline (Prompt 8's honesty
+    requirement) on every call, not just at training time.
     """
     model, ckpt = _load_forecaster()
     if model is None:
@@ -555,14 +681,14 @@ def forecast(horizon_days: int = 7):
     }
 
 
-# --- /flag-anomaly (Prompt 8) ------------------------------------------------
+# --- /flag-anomaly (Prompt 8, legacy single-city artifact) ------------------
 
 
 def _load_anomaly_detector():
     """Lazily loads the trained IsolationForest claim-anomaly detector. None if untrained."""
     if "detector" in _anomaly_cache:
         return _anomaly_cache["detector"]
-    if not ANOMALY_PATH.exists():
+    if not os.path.exists(ANOMALY_PATH):
         return None
 
     import pickle
@@ -608,33 +734,6 @@ def flag_anomaly(req: FlagAnomalyRequest):
     is_anomalous = bool(detector.predict(row)[0])
     anomaly_score = float(detector.score(row)[0])
     return FlagAnomalyResponse(is_anomalous=is_anomalous, anomaly_score=anomaly_score)
-
-
-# --- /assistant/ask (Prompt 9) -----------------------------------------------
-
-
-class AssistantAskRequest(BaseModel):
-    policy_id: str
-    question: str
-
-
-class AssistantAskResponse(BaseModel):
-    policy_id: str
-    answer: str
-    source: str
-
-
-@app.post("/assistant/ask", response_model=AssistantAskResponse)
-@limiter.limit("30/minute")
-def assistant_ask(req: AssistantAskRequest, request: Request):
-    """Grounded Claude policy assistant: get_policy_state (backend.assistant.tools)
-    is the model's ONLY source of numeric facts about a policy -- see
-    backend.assistant.service for the tool-use loop and the no-key /
-    on-error deterministic fallback that keeps this route from ever 500ing.
-    """
-    result = assistant_service.ask(req.policy_id, req.question, _policy_cache)
-    return AssistantAskResponse(policy_id=req.policy_id, answer=result["answer"],
-                                source=result["source"])
 
 
 if __name__ == "__main__":

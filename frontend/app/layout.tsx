@@ -9,13 +9,13 @@ const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jet
 export const metadata = {
   title: "Pricing the Heat",
   description:
-    "High-frequency income smoothing for informal outdoor workers facing heatwave wage loss",
+    "Parametric heat-wage-loss insurance for informal outdoor workers, priced per state from " +
+    "each state's own real climate regime -- income smoothing or catastrophe cover, never assumed",
 };
 
 const NAV_LINKS = [
   { href: "/", label: "Heat map" },
   { href: "/simulate", label: "Simulate a policy" },
-  { href: "/assistant", label: "Ask the assistant" },
   { href: "/methodology", label: "Methodology" },
 ];
 
@@ -34,7 +34,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               </Link>
             ))}
             <span className="ml-auto text-xs text-gray-400 uppercase tracking-wide">
-              Income smoothing, not disaster insurance
+              79 states, priced by real climate regime
             </span>
           </nav>
         </header>

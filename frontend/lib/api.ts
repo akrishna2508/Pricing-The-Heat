@@ -1,9 +1,11 @@
 import type {
-  AssistantAskResponse,
   ExplainResponse,
   HeatmapResponse,
+  ResolveLocationRequest,
+  ResolveLocationResponse,
   SimulatePolicyRequest,
   SimulatePolicyResponse,
+  StateListEntry,
 } from "./types";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -64,9 +66,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function getHeatmap(date?: string): Promise<HeatmapResponse> {
-  const qs = date ? `?date=${encodeURIComponent(date)}` : "";
-  return request<HeatmapResponse>(`/heatmap${qs}`);
+export function getStates(): Promise<StateListEntry[]> {
+  return request<StateListEntry[]>("/states");
+}
+
+export function resolveLocation(body: ResolveLocationRequest): Promise<ResolveLocationResponse> {
+  return request<ResolveLocationResponse>("/resolve-location", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getHeatmap(stateKey: string, date?: string): Promise<HeatmapResponse> {
+  const qs = new URLSearchParams({ state_key: stateKey, ...(date ? { date } : {}) });
+  return request<HeatmapResponse>(`/heatmap?${qs.toString()}`);
 }
 
 export function simulatePolicy(body: SimulatePolicyRequest): Promise<SimulatePolicyResponse> {
@@ -78,11 +91,4 @@ export function simulatePolicy(body: SimulatePolicyRequest): Promise<SimulatePol
 
 export function explainPolicy(policyId: string): Promise<ExplainResponse> {
   return request<ExplainResponse>(`/explain/${encodeURIComponent(policyId)}`);
-}
-
-export function assistantAsk(policyId: string, question: string): Promise<AssistantAskResponse> {
-  return request<AssistantAskResponse>("/assistant/ask", {
-    method: "POST",
-    body: JSON.stringify({ policy_id: policyId, question }),
-  });
 }

@@ -12,6 +12,16 @@ frontend/next-env.d.ts
 *.pkl
 data/raw/*
 !data/raw/*.meta.json
+# admin1_in_us.geojson is real, public-domain Natural Earth boundary data
+# (not a fetched API response cache) -- backend/data/geo_states.py's
+# resolve_state() reads it at RUNTIME on the deployed API (no geocoding API,
+# no key), so unlike the raw NASA POWER caches above, it must ship with the
+# repo/Docker image, not stay gitignored. The other raw Natural Earth source
+# files in data/raw/geo/ (e.g. ne_50m_admin_1_states_provinces.geojson) are
+# regenerable build inputs, not runtime dependencies, and stay ignored.
+!data/raw/geo/
+data/raw/geo/*
+!data/raw/geo/admin1_in_us.geojson
 data/processed/*
 models/artifacts/*
 .pytest_cache/

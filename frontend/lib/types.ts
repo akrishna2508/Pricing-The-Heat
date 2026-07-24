@@ -1,6 +1,30 @@
 // Types mirroring backend/main.py's Pydantic response models exactly -- kept
 // in one place so a backend schema change surfaces as a single TS diff here.
 
+export type CoverageMode = "configured" | "excluded" | "out_of_coverage";
+export type StateMode = "configured" | "excluded" | "unpriced";
+export type Frame = "income_smoothing" | "catastrophe_insurance";
+
+export type StateListEntry = {
+  state_key: string;
+  state: string;
+  country: string;
+  currency: string;
+  metro: string;
+  mode: StateMode;
+};
+
+export type ResolveLocationRequest = { lat: number; lon: number };
+
+export type ResolveLocationResponse = {
+  country: string | null;
+  state: string | null;
+  state_key: string | null;
+  currency: string | null;
+  mode: CoverageMode;
+  message: string | null;
+};
+
 export type HeatmapFeature = {
   type: "Feature";
   geometry: { type: "Point"; coordinates: [number, number] };
@@ -15,8 +39,10 @@ export type HeatmapResponse = {
   type: "FeatureCollection";
   features: HeatmapFeature[];
   metadata: {
+    state_key: string;
+    state: string;
     date: string;
-    product_type: string;
+    frame: Frame | null;
     note: string;
   };
 };
@@ -24,6 +50,7 @@ export type HeatmapResponse = {
 export type DateRange = { start: string; end: string };
 
 export type SimulatePolicyRequest = {
+  state_key?: string;
   occupation: string;
   date_range: DateRange;
   lat?: number;
@@ -47,20 +74,33 @@ export type PayoutSchedule = {
 
 export type MuTeviPoint = { ts: string; mu_tevi: number };
 
-export type CoverageMode = "configured" | "explicit" | "out_of_coverage";
+export type WageProvenance = {
+  state: string;
+  occupation: string;
+  value: number;
+  currency: string;
+  source_url: string | null;
+  confidence: string | null;
+  note: string | null;
+};
 
 export type SimulatePolicyResponse = {
   policy_id: string;
-  product_type: string;
   coverage_mode: CoverageMode;
-  resolved_city: string | null;
-  distance_km: number | null;
+  country: string | null;
+  state: string | null;
+  state_key: string | null;
+  currency: string | null;
+  frame: Frame | null;
+  strike: number | null;
+  window_days: number | null;
   occupation: string | null;
   premium_lsmc: number | null;
   premium_wang: number | null;
   payout_schedule: PayoutSchedule | null;
   mu_tevi_series: MuTeviPoint[] | null;
   basis_risk: BasisRisk | null;
+  wage_provenance: WageProvenance | null;
   message: string | null;
   note: string;
 };
@@ -71,10 +111,4 @@ export type ExplainResponse = {
   feature_contributions: Record<string, number>;
   feature_contributions_normalized: Record<string, number>;
   note: string;
-};
-
-export type AssistantAskResponse = {
-  policy_id: string;
-  answer: string;
-  source: "model" | "model_ungrounded" | "fallback_no_key" | "fallback_error";
 };

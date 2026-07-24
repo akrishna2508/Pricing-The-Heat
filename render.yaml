@@ -18,14 +18,6 @@ services:
         # requests from the frontend will be rejected -- this is
         # deliberately NOT defaulted to "*" now that a real frontend service
         # exists to point at.
-      - key: ANTHROPIC_API_KEY
-        sync: false
-        # Optional -- /assistant/ask works via its deterministic no-key
-        # fallback (backend/assistant/fallback.py) if this is left unset.
-      - key: ANTHROPIC_MODEL
-        sync: false
-        # Optional -- backend/assistant/service.py's own DEFAULT_MODEL
-        # ("claude-sonnet-4-5") applies if this is left unset.
 
   - type: web
     name: pricing-heat-web

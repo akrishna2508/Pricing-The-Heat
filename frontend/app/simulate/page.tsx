@@ -1,19 +1,29 @@
 "use client";
 
-import { useState } from "react";
-import { ApiError, explainPolicy, simulatePolicy } from "@/lib/api";
-import type { ExplainResponse, SimulatePolicyResponse } from "@/lib/types";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ApiError,
+  explainPolicy,
+  getStates,
+  resolveLocation,
+  simulatePolicy,
+} from "@/lib/api";
+import type {
+  ExplainResponse,
+  SimulatePolicyResponse,
+  StateListEntry,
+} from "@/lib/types";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { FeatureBars } from "@/components/FeatureBars";
 import { PayoutChart } from "@/components/PayoutChart";
 import { Sparkline } from "@/components/Sparkline";
 
 const OCCUPATIONS = ["vendor", "construction", "delivery"];
-// Mirrors the chosen contract in backend/data/cities.yaml (window_days: 14).
-// The backend is the single source of truth for pricing -- this only drives
-// the date picker's UX (auto-computing the window end) and does not affect
-// what actually gets priced server-side.
-const WINDOW_DAYS = 14;
+// UX-only default: every state's real contract.json currently selects a
+// 14-day window (see docs/STATEWISE_RESULTS.md); this only drives the date
+// picker's auto-computed window end, never what actually gets priced --
+// the backend is the single source of truth for the real per-state window.
+const WINDOW_DAYS_UX_DEFAULT = 14;
 
 function addDays(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -21,7 +31,31 @@ function addDays(iso: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+function groupByCountry(states: StateListEntry[]): Map<string, StateListEntry[]> {
+  const groups = new Map<string, StateListEntry[]>();
+  const sorted = [...states].sort((a, b) => a.state.localeCompare(b.state));
+  for (const s of sorted) {
+    const key = s.country === "IN" ? "India" : s.country === "US" ? "United States" : s.country;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(s);
+  }
+  return groups;
+}
+
+function sourceLabel(url: string | null): string {
+  if (!url) return "source not on file";
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
 export default function SimulatePage() {
+  const [states, setStates] = useState<StateListEntry[] | null>(null);
+  const [statesError, setStatesError] = useState<string | null>(null);
+  const [manualStateKey, setManualStateKey] = useState<string>("");
+
   const [occupation, setOccupation] = useState("vendor");
   const [startDate, setStartDate] = useState("2019-06-01");
   const [result, setResult] = useState<SimulatePolicyResponse | null>(null);
@@ -31,10 +65,26 @@ export default function SimulatePage() {
   const [locationNotice, setLocationNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [explainLoading, setExplainLoading] = useState(false);
+  const [provenanceOpen, setProvenanceOpen] = useState(false);
 
-  const endDate = addDays(startDate, WINDOW_DAYS - 1);
+  useEffect(() => {
+    getStates()
+      .then((rows) => {
+        setStates(rows);
+        setManualStateKey((prev) => prev || rows[0]?.state_key || "");
+      })
+      .catch((err: unknown) => {
+        setStatesError(err instanceof ApiError ? err.message : "Failed to load the state list.");
+      });
+  }, []);
 
-  async function runSimulate(coords?: { lat: number; lon: number }) {
+  const grouped = useMemo(
+    () => (states ? groupByCountry(states) : new Map<string, StateListEntry[]>()),
+    [states],
+  );
+  const endDate = addDays(startDate, WINDOW_DAYS_UX_DEFAULT - 1);
+
+  async function priceStateKey(stateKey: string) {
     setLoading(true);
     setError(null);
     setResult(null);
@@ -42,17 +92,11 @@ export default function SimulatePage() {
     setExplainError(null);
     try {
       const resp = await simulatePolicy({
+        state_key: stateKey,
         occupation,
         date_range: { start: startDate, end: endDate },
-        ...(coords ?? {}),
       });
       setResult(resp);
-      if (resp.coverage_mode !== "out_of_coverage" && typeof window !== "undefined") {
-        // Lets /assistant pick this policy up automatically for the natural
-        // "simulate, then ask about it" flow. Never stores the raw lat/lon --
-        // only the resulting policy_id, matching the location-privacy rule.
-        window.localStorage.setItem("lastPolicyId", resp.policy_id);
-      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't reach the pricing server.");
     } finally {
@@ -62,20 +106,35 @@ export default function SimulatePage() {
 
   function useMyLocation() {
     setLocationNotice(null);
+    setError(null);
+    setResult(null);
     if (!("geolocation" in navigator)) {
-      setLocationNotice("Geolocation isn't supported by this browser. Pricing the default city instead.");
-      void runSimulate();
+      setLocationNotice("Geolocation isn't supported by this browser. Pick your state manually below.");
       return;
     }
+    setLoading(true);
     navigator.geolocation.getCurrentPosition(
       (position) => {
         // lat/lon are sent ONLY in the POST body below -- never a URL/query
         // string -- and are never persisted beyond this one request.
-        void runSimulate({ lat: position.coords.latitude, lon: position.coords.longitude });
+        const { latitude: lat, longitude: lon } = position.coords;
+        resolveLocation({ lat, lon })
+          .then(async (geo) => {
+            if (geo.mode === "out_of_coverage") {
+              setLocationNotice(geo.message ?? "This location isn't covered yet. Pick your state manually below.");
+              setLoading(false);
+              return;
+            }
+            setLocationNotice(`Detected: ${geo.state}, ${geo.country}`);
+            await priceStateKey(geo.state_key!);
+          })
+          .catch((err: unknown) => {
+            setError(err instanceof ApiError ? err.message : "Couldn't resolve your location.");
+            setLoading(false);
+          });
       },
       () => {
-        setLocationNotice("Location permission denied. Pricing the default city instead.");
-        void runSimulate();
+        setLocationNotice("Location permission denied. Pick your state manually below.");
       },
     );
   }
@@ -97,9 +156,15 @@ export default function SimulatePage() {
     <main className="max-w-2xl mx-auto p-4 sm:p-6">
       <h1 className="text-xl font-semibold mb-1">Simulate a policy</h1>
       <p className="text-sm text-gray-600 mb-6">
-        This prices a {WINDOW_DAYS}-day income-smoothing contract for chronic heat wage-loss --
-        not a payout for a single rare event.
+        Prices a real coverage window for whichever state you detect or select -- the frame (income
+        smoothing vs. catastrophe insurance) and currency are that state&rsquo;s own, never assumed.
       </p>
+
+      {statesError && (
+        <div className="mb-4">
+          <ErrorBanner message={statesError} />
+        </div>
+      )}
 
       <div className="space-y-4 mb-6">
         <label className="block text-sm text-gray-700">
@@ -118,7 +183,7 @@ export default function SimulatePage() {
         </label>
 
         <label className="block text-sm text-gray-700">
-          Coverage window start ({WINDOW_DAYS} days, ending {endDate})
+          Coverage window start ({WINDOW_DAYS_UX_DEFAULT} days, ending {endDate})
           <input
             type="date"
             value={startDate}
@@ -129,28 +194,51 @@ export default function SimulatePage() {
           />
         </label>
 
-        <div className="flex gap-2">
-          <button
-            onClick={useMyLocation}
-            disabled={loading}
-            className="flex-1 rounded bg-gray-900 text-white px-4 py-2 text-sm disabled:opacity-50"
-          >
-            Use my location
-          </button>
-          <button
-            onClick={() => void runSimulate()}
-            disabled={loading}
-            className="flex-1 rounded border border-gray-300 text-gray-800 px-4 py-2 text-sm disabled:opacity-50"
-          >
-            Price default city
-          </button>
-        </div>
+        <button
+          onClick={useMyLocation}
+          disabled={loading}
+          className="w-full rounded bg-gray-900 text-white px-4 py-2 text-sm disabled:opacity-50"
+        >
+          Use my location
+        </button>
 
         {locationNotice && (
           <p className="text-sm text-amber-700" role="status">
             {locationNotice}
           </p>
         )}
+
+        <div className="flex gap-2 items-end pt-2 border-t border-gray-100">
+          <label className="flex-1 text-sm text-gray-700">
+            Or pick a state manually
+            <select
+              value={manualStateKey}
+              onChange={(e) => setManualStateKey(e.target.value)}
+              disabled={!states}
+              className="mt-1 w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            >
+              {states === null && <option>Loading states...</option>}
+              {[...grouped.entries()].map(([country, rows]) => (
+                <optgroup key={country} label={country}>
+                  {rows.map((s) => (
+                    <option key={s.state_key} value={s.state_key}>
+                      {s.state}
+                      {s.mode === "excluded" ? " (excluded)" : ""}
+                      {s.mode === "unpriced" ? " (not yet trained)" : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <button
+            onClick={() => void priceStateKey(manualStateKey)}
+            disabled={loading || !manualStateKey}
+            className="rounded border border-gray-300 text-gray-800 px-4 py-2 text-sm disabled:opacity-50"
+          >
+            Price
+          </button>
+        </div>
       </div>
 
       {loading && <p className="text-sm text-gray-400 mb-4">Pricing...</p>}
@@ -160,34 +248,41 @@ export default function SimulatePage() {
         </div>
       )}
 
-      {result && result.coverage_mode === "out_of_coverage" && (
+      {result && (result.coverage_mode === "out_of_coverage" || result.coverage_mode === "excluded") && (
         <div className="border border-amber-200 bg-amber-50 rounded p-4">
-          <p className="font-medium text-amber-800">Not covered yet</p>
+          <p className="font-medium text-amber-800">
+            {result.coverage_mode === "excluded" ? "Excluded from pricing" : "Not covered yet"}
+          </p>
           <p className="text-sm mt-1 text-amber-900">{result.message}</p>
           <p className="text-xs mt-2 text-amber-700">{result.note}</p>
         </div>
       )}
 
-      {result && result.coverage_mode !== "out_of_coverage" && (
+      {result && result.coverage_mode === "configured" && (
         <div className="border border-gray-200 rounded bg-white p-4 space-y-5">
           <div>
             <p className="text-sm text-gray-600">
-              Priced for {result.resolved_city}
-              {result.distance_km != null && ` (~${result.distance_km} km from you)`} -- {result.occupation}
+              Priced for {result.state}, {result.country} -- {result.occupation}
             </p>
-            <p className="text-xs uppercase tracking-wide text-heat-4 font-medium mt-1">
-              {result.product_type.replace(/_/g, " ")}
-            </p>
+            {result.frame && (
+              <p className="text-xs uppercase tracking-wide text-heat-4 font-medium mt-1">
+                {result.frame.replace(/_/g, " ")}
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
               <p className="text-xs text-gray-500">Premium (fair actuarial price)</p>
-              <p className="font-mono text-lg">{result.premium_lsmc?.toFixed(2)}</p>
+              <p className="font-mono text-2xl font-semibold">
+                {result.currency} {result.premium_lsmc?.toFixed(2)}
+              </p>
             </div>
             <div>
               <p className="text-xs text-gray-500">Premium (with insurer&rsquo;s risk load)</p>
-              <p className="font-mono text-lg">{result.premium_wang?.toFixed(2)}</p>
+              <p className="font-mono text-lg">
+                {result.currency} {result.premium_wang?.toFixed(2)}
+              </p>
             </div>
           </div>
 
@@ -253,6 +348,39 @@ export default function SimulatePage() {
           </div>
 
           <p className="text-xs text-gray-400 pt-2 border-t border-gray-100">{result.note}</p>
+
+          {result.wage_provenance && (
+            <details
+              open={provenanceOpen}
+              onToggle={(e) => setProvenanceOpen((e.target as HTMLDetailsElement).open)}
+              className="pt-2 border-t border-gray-100"
+            >
+              <summary className="text-xs text-gray-400 cursor-pointer select-none">
+                Wage basis: {result.wage_provenance.state} &middot; {sourceLabel(result.wage_provenance.source_url)} &middot; details
+              </summary>
+              <div className="mt-2 text-xs text-gray-500 space-y-1">
+                <p>
+                  Value: <span className="font-mono">{result.wage_provenance.value}</span>{" "}
+                  {result.wage_provenance.currency}/day ({result.wage_provenance.occupation})
+                </p>
+                {result.wage_provenance.confidence && <p>Confidence: {result.wage_provenance.confidence}</p>}
+                {result.wage_provenance.source_url && (
+                  <p>
+                    Source:{" "}
+                    <a
+                      href={result.wage_provenance.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline"
+                    >
+                      {result.wage_provenance.source_url}
+                    </a>
+                  </p>
+                )}
+                {result.wage_provenance.note && <p>Note: {result.wage_provenance.note}</p>}
+              </div>
+            </details>
+          )}
         </div>
       )}
     </main>
