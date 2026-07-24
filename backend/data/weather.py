@@ -8,6 +8,7 @@ place.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +24,21 @@ REGIONAL_URL = f"https://{POWER_HOST}/api/temporal/daily/regional"
 MAX_DAYS_PER_CALL = 366
 MIN_DEGREES_PER_TILE = 2.0
 
+# NASA POWER's daily processing lag, live-verified 2026-07-24 against the real
+# point API (Ahmedabad): T2M/RH2M were real through today-3d and -999
+# (no-data) for the 3 most recent days. Used only as the DEFAULT `end` for
+# callers that don't pass one explicitly -- a request for a date that turns
+# out not to be real yet still goes through MODE B (nearest-real fill) or
+# MODE A (hard-stop) exactly as any other gap would, so this is a sane
+# default, not a promise the API can't keep.
+NASA_POWER_LAG_DAYS = 3
+
 PARAMETERS = ("T2M", "RH2M")
+
+
+def default_end_date() -> str:
+    """Most recent date NASA POWER will realistically have real data for."""
+    return (date.today() - timedelta(days=NASA_POWER_LAG_DAYS)).strftime("%Y%m%d")
 
 
 def _date_chunks(start: str, end: str, max_days: int = MAX_DAYS_PER_CALL) -> list[tuple[str, str]]:
@@ -95,7 +110,7 @@ class WeatherLoader:
         self.cache_dir = Path(cache_dir)
 
     def fetch_daily(
-        self, start: str = "20140101", end: str = "20231231",
+        self, start: str = "20140101", end: str | None = None,
         tile_deg: float = MIN_DEGREES_PER_TILE,
     ) -> pd.DataFrame:
         """Fetch T2M and RH2M separately (regional = one parameter/call),
@@ -110,7 +125,12 @@ class WeatherLoader:
         and above the 2deg floor) so a big state needs far fewer requests -- same
         regional endpoint and tiling function, just a different valid tile size,
         not new fetch semantics.
+
+        `end` defaults to `default_end_date()` (today minus the live-verified
+        NASA POWER processing lag) rather than a fixed date, so every caller
+        that doesn't pass its own `end` naturally tracks real current data.
         """
+        end = end or default_end_date()
         tiles = _spatial_tiles(self.bbox, tile_deg)
         chunks = _date_chunks(start, end)
 

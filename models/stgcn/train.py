@@ -51,7 +51,7 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from backend.data.build_wage_loss import CITIES_YAML_PATH
-from backend.data.weather import WeatherLoader
+from backend.data.weather import WeatherLoader, default_end_date
 from models.stgcn.city_graph import CityGraphBuilder
 from models.stgcn.model import STGCN
 
@@ -100,16 +100,22 @@ def set_seeds(seed: int = SEED) -> None:
     torch.manual_seed(seed)
 
 
-def load_weather(start: str = "20140101", end: str = "20231231") -> pd.DataFrame:
+def load_weather(start: str = "20140101", end: str | None = None) -> pd.DataFrame:
     """Real NASA POWER weather with WBGT, cached at WEATHER_PARQUET.
 
     On a cache miss this rebuilds from the raw NASA POWER responses already in
     data/raw/ via WeatherLoader (no network call when the raw cache is warm),
     so `make reproduce` is deterministic. MODE A / MODE B are enforced inside
     backend.data.recovery; nothing is fabricated here.
+
+    `end` defaults to `default_end_date()` (today minus NASA POWER's real
+    processing lag) so a FUTURE training run naturally fetches up to real
+    current data; existing cached WEATHER_PARQUET files are returned as-is
+    below and never re-fetched by this change.
     """
     if WEATHER_PARQUET.exists():
         return pd.read_parquet(WEATHER_PARQUET)
+    end = end or default_end_date()
 
     if _CTX is not None:
         bbox = _CTX.bbox            # this state's anchor-metro grid
@@ -188,7 +194,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Train the STGCN heat map on real NASA POWER data")
     parser.add_argument("--epochs", type=int, default=MAX_EPOCHS)
     parser.add_argument("--start", default="20140101")
-    parser.add_argument("--end", default="20231231")
+    parser.add_argument("--end", default=None, help="YYYYMMDD; defaults to today minus NASA POWER's real processing lag")
     args = parser.parse_args()
 
     started = time.time()

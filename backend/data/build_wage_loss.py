@@ -19,7 +19,7 @@ import yaml
 from backend.data import elasticity
 from backend.data.survey import SurveyDataLoader
 from backend.data.wages import WageLoader, WORLD_BANK_HOST
-from backend.data.weather import POWER_HOST, WeatherLoader
+from backend.data.weather import POWER_HOST, WeatherLoader, default_end_date
 
 CITIES_YAML_PATH = Path(__file__).parent / "cities.yaml"
 DEFAULT_OUTPUT_PATH = Path("data/processed/wage_loss.parquet")
@@ -41,8 +41,9 @@ def _wage_loss_fraction_series(wbgt: pd.Series, params: dict) -> pd.Series:
     return frac.clip(lower=0.0, upper=elasticity.MAX_LOSS_FRACTION)
 
 
-def build(city_key: str | None = None, start: str = "20140101", end: str = "20231231",
+def build(city_key: str | None = None, start: str = "20140101", end: str | None = None,
           output_path: Path = DEFAULT_OUTPUT_PATH) -> pd.DataFrame:
+    end = end or default_end_date()
     with open(CITIES_YAML_PATH) as f:
         config = yaml.safe_load(f)
     key = city_key or config["default_city"]
@@ -123,7 +124,7 @@ def main():
     parser = argparse.ArgumentParser(description="Build wage_loss.parquet from real data")
     parser.add_argument("--city", default=None)
     parser.add_argument("--start", default="20140101")
-    parser.add_argument("--end", default="20231231")
+    parser.add_argument("--end", default=None, help="YYYYMMDD; defaults to today minus NASA POWER's real processing lag")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT_PATH))
     args = parser.parse_args()
 

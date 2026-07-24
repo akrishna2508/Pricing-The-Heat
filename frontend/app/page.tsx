@@ -32,6 +32,20 @@ const OSM_ATTRIBUTION = "© OpenStreetMap contributors";
 // the added interior cells cheap (only border cells are polygon-clipped).
 const CELLS_ACROSS = 90;
 
+// NASA POWER's real daily processing lag (live-verified 2026-07-24 against the
+// point API: real T2M/RH2M through today-3d, -999 for the 3 most recent days
+// -- mirrors backend/data/weather.py's NASA_POWER_LAG_DAYS). Used only to pick
+// a default/max date that's actually backed by real data; requesting a date
+// past this is still handled honestly by the backend's MODE A/B, this just
+// avoids defaulting the picker to a date that predictably has none.
+const NASA_POWER_LAG_DAYS = 3;
+
+function latestRealDate(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - NASA_POWER_LAG_DAYS);
+  return d.toISOString().slice(0, 10);
+}
+
 // Build the state-clipped IDW heat surface from the REAL per-node points.
 //
 // WHY IDW-INTO-A-FILL, not MapLibre's native heatmap layer (v2.5): each state's
@@ -170,7 +184,7 @@ export default function HeatmapPage() {
   const [statesError, setStatesError] = useState<string | null>(null);
   const [stateKey, setStateKey] = useState<string>(DEFAULT_STATE_KEY);
 
-  const [date, setDate] = useState("2023-12-31");
+  const [date, setDate] = useState(latestRealDate);
   const [data, setData] = useState<HeatmapResponse | null>(null);
   const [boundary, setBoundary] = useState<StateBoundary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -498,7 +512,7 @@ export default function HeatmapPage() {
             type="date"
             value={date}
             min="2014-01-01"
-            max="2023-12-31"
+            max={latestRealDate()}
             onChange={(e) => setDate(e.target.value)}
             className="ml-2 border border-gray-300 rounded px-2 py-1 text-sm font-mono"
           />
