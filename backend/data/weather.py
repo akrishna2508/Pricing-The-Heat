@@ -23,6 +23,16 @@ REGIONAL_URL = f"https://{POWER_HOST}/api/temporal/daily/regional"
 # a single call must span < 366 days and >= 2 degrees in both lat and lon.
 MAX_DAYS_PER_CALL = 366
 MIN_DEGREES_PER_TILE = 2.0
+# Every individual tile actually sent to NASA POWER must clear this floor, not
+# the bare 2.0 minimum: padding to EXACTLY 2.0 still underflows after
+# double-precision arithmetic -- IN-Kerala's anchor bbox once measured
+# 1.9999999999999991deg at nominal-2.0 padding and got a real HTTP 422 (fixed
+# in config/state_anchors.yaml, commit 31311dc, by widening to +/-1.005deg).
+# The same class of failure applies to any tile computed at request time (a
+# small state's real border bbox, e.g. Massachusetts at 1.63deg latitude
+# span -- confirmed live, v2.8 session), so the margin is enforced once here,
+# at the shared tiling point, rather than re-padded per caller.
+NASA_POWER_MIN_TILE_DEG = MIN_DEGREES_PER_TILE + 0.01
 
 # NASA POWER's daily processing lag, live-verified 2026-07-24 against the real
 # point API (Ahmedabad): T2M/RH2M were real through today-3d and -999
@@ -53,11 +63,27 @@ def _date_chunks(start: str, end: str, max_days: int = MAX_DAYS_PER_CALL) -> lis
     return chunks
 
 
+def _pad_to_min_span(vmin: float, vmax: float, floor: float = NASA_POWER_MIN_TILE_DEG) -> tuple[float, float]:
+    """Widen [vmin, vmax] symmetrically about its own center up to `floor`.
+
+    A no-op whenever the span already clears the floor, so this can be applied
+    unconditionally to every tile without changing any tile that was already
+    valid.
+    """
+    span = vmax - vmin
+    if span >= floor:
+        return vmin, vmax
+    pad = (floor - span) / 2.0
+    return vmin - pad, vmax + pad
+
+
 def _spatial_tiles(bbox: dict, tile_deg: float = MIN_DEGREES_PER_TILE) -> list[dict]:
     lat_min, lat_max = bbox["lat_min"], bbox["lat_max"]
     lon_min, lon_max = bbox["lon_min"], bbox["lon_max"]
 
     if (lat_max - lat_min) <= tile_deg and (lon_max - lon_min) <= tile_deg:
+        lat_min, lat_max = _pad_to_min_span(lat_min, lat_max)
+        lon_min, lon_max = _pad_to_min_span(lon_min, lon_max)
         return [dict(lat_min=lat_min, lat_max=lat_max, lon_min=lon_min, lon_max=lon_max)]
 
     tiles = []
@@ -73,7 +99,10 @@ def _spatial_tiles(bbox: dict, tile_deg: float = MIN_DEGREES_PER_TILE) -> list[d
             if lon_right - lon < tile_deg:
                 lon = max(lon_max - tile_deg, lon_min)
                 lon_right = lon_max
-            tiles.append(dict(lat_min=lat, lat_max=lat_top, lon_min=lon, lon_max=lon_right))
+            tile_lat_min, tile_lat_max = _pad_to_min_span(lat, lat_top)
+            tile_lon_min, tile_lon_max = _pad_to_min_span(lon, lon_right)
+            tiles.append(dict(lat_min=tile_lat_min, lat_max=tile_lat_max,
+                               lon_min=tile_lon_min, lon_max=tile_lon_max))
             if lon_right >= lon_max:
                 break
             lon = lon_right
