@@ -52,7 +52,11 @@ from backend.data.geo_states import GEOJSON_PATH, resolve_state
 from backend.state_context import all_state_keys, get_context, state_exists
 from backend.anchor_weather import fetch_anchor_weather_live
 from backend.mu_tevi_extend import extend_mu_tevi
-from backend.window_contracts import SELECTABLE_WINDOW_DAYS, contract_for_window
+from backend.window_contracts import (
+    SELECTABLE_WINDOW_DAYS,
+    SweepTableUnavailable,
+    contract_for_window,
+)
 from backend.state_heatmap import build_state_heatmap
 from models.pricing.lsmc_pricer import LSMCPricer
 
@@ -423,6 +427,10 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
             selected = contract_for_window(state_key, int(req.window_days))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
+        except SweepTableUnavailable as exc:
+            # NOT "untrained" -- the model is fine, this deployment just can't
+            # price a non-default length. Reported as itself.
+            raise HTTPException(status_code=409, detail=str(exc)) from None
         except FileNotFoundError:
             raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL) from None
         window_days = selected["window_days"]
@@ -462,6 +470,17 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
             ) from None
         except ValueError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from None
+        except FileNotFoundError as exc:
+            # A frozen-model input this deployment doesn't ship (e.g. per-state
+            # calibration.json, absent from the runtime bundle before v2.13).
+            # Surfaced as a real 503 rather than an unhandled 500.
+            missing_name = os.path.basename(exc.filename) if exc.filename else str(exc)
+            raise HTTPException(
+                status_code=503,
+                detail=f"cannot extend pricing past the calibrated period here: a required "
+                       f"model artifact is missing from this deployment ({missing_name}). "
+                       f"No value was substituted.",
+            ) from None
         if not extra.empty:
             combined = (pd.concat([state_index, extra], ignore_index=True)
                         .drop_duplicates(subset="ts", keep="last")
