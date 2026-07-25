@@ -51,6 +51,7 @@ from slowapi.util import get_remote_address
 from backend.data.geo_states import GEOJSON_PATH, resolve_state
 from backend.state_context import all_state_keys, get_context, state_exists
 from backend.anchor_weather import fetch_anchor_weather_live
+from backend.mu_tevi_extend import extend_mu_tevi
 from backend.state_heatmap import build_state_heatmap
 from models.pricing.lsmc_pricer import LSMCPricer
 
@@ -298,6 +299,11 @@ class SimulatePolicyResponse(BaseModel):
     basis_risk: BasisRiskBlock | None = None
     wage_provenance: WageProvenanceBlock | None = None
     message: str | None = None
+    # How many days of the priced window came from live-fetched real weather
+    # run through the ALREADY-FITTED models, rather than from the static
+    # calibrated mu-TEVI series. 0 => entirely within the calibration period.
+    extended_days: int | None = None
+    calibrated_through: str | None = None
     note: str
 
 
@@ -371,8 +377,36 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
     if not mu_tevi_path.exists():
         raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL)
     state_index = pd.read_parquet(mu_tevi_path).sort_values("ts").reset_index(drop=True)
+    last_calibrated_ts = pd.Timestamp(state_index["ts"].max())
     start_ts = pd.Timestamp(req.date_range.start)
     window_df = state_index[state_index["ts"] >= start_ts].head(window_days)
+
+    # The static mu_tevi.parquet stops at the end of this state's calibration
+    # period. For a window running past it, extend with real CURRENT data by
+    # FORWARD-APPLYING the already-fitted models (calibration.json's
+    # kappa/gamma, copula.json's theta/GEV/hurdle) to real observed weather --
+    # nothing is refitted, and mu_tevi.parquet itself is never written. See
+    # backend/mu_tevi_extend.py.
+    extended_days = 0
+    if len(window_df) < window_days:
+        window_end_ts = start_ts + pd.Timedelta(days=window_days - 1)
+        try:
+            extra = extend_mu_tevi(state_key, start_ts, window_end_ts)
+        except SystemExit:
+            raise HTTPException(
+                status_code=503,
+                detail=f"real weather needed to price {req.date_range.start} could not be "
+                       f"fetched from NASA POWER (source unreachable); no substitute was used",
+            ) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        if not extra.empty:
+            combined = (pd.concat([state_index, extra], ignore_index=True)
+                        .drop_duplicates(subset="ts", keep="last")
+                        .sort_values("ts").reset_index(drop=True))
+            window_df = combined[combined["ts"] >= start_ts].head(window_days)
+            extended_days = int((window_df["ts"] > last_calibrated_ts).sum())
+
     if len(window_df) < window_days:
         raise HTTPException(
             status_code=404,
@@ -425,6 +459,8 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
         ],
         basis_risk=BasisRiskBlock(**result["basis_risk"]),
         wage_provenance=wage_provenance,
+        extended_days=extended_days,
+        calibrated_through=str(last_calibrated_ts.date()),
         note=(
             f"Priced as {contract['frame'].replace('_', ' ')} -- this state's frame is "
             f"discovered from its own real climate regime, never assumed globally: a "
@@ -432,6 +468,14 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
             f"starting {req.date_range.start}. basis_risk reports how often the index "
             f"under/over-pays the worker's own modeled loss -- inherent to any parametric "
             f"product, surfaced honestly rather than hidden."
+            + (
+                f" {extended_days} of these {window_days} days fall after this state's "
+                f"calibration period (which ends {last_calibrated_ts.date()}): their mu-TEVI "
+                f"comes from live-fetched real NASA POWER weather run through the SAME "
+                f"already-fitted models and priced with the SAME committed contract -- "
+                f"nothing was refitted for them."
+                if extended_days else ""
+            )
         ),
     )
 

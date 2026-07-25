@@ -117,6 +117,11 @@ export type SimulatePolicyResponse = {
   basis_risk: BasisRisk | null;
   wage_provenance: WageProvenance | null;
   message: string | null;
+  // Days of the priced window that fall after the state's calibration period
+  // and were computed by forward-applying the already-fitted models to
+  // live-fetched real weather. 0 => entirely within the calibrated series.
+  extended_days: number | null;
+  calibrated_through: string | null;
   note: string;
 };
 

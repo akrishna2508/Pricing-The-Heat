@@ -25,9 +25,24 @@ const OCCUPATIONS = ["vendor", "construction", "delivery"];
 // the backend is the single source of truth for the real per-state window.
 const WINDOW_DAYS_UX_DEFAULT = 14;
 
+// NASA POWER's real daily processing lag, mirroring
+// backend/data/weather.py's NASA_POWER_LAG_DAYS. Pricing past the
+// calibration period forward-applies the fitted models to live-fetched real
+// weather, so the picker's ceiling is now set by what NASA POWER has really
+// published, not by the end of the calibrated series.
+const NASA_POWER_LAG_DAYS = 3;
+
 function addDays(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Latest window START whose full 14-day window still ends on a day NASA
+// POWER has real data for.
+function latestWindowStart(): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - NASA_POWER_LAG_DAYS - (WINDOW_DAYS_UX_DEFAULT - 1));
   return d.toISOString().slice(0, 10);
 }
 
@@ -198,7 +213,7 @@ export default function SimulatePage() {
             type="date"
             value={startDate}
             min="2014-01-01"
-            max="2023-12-18"
+            max={latestWindowStart()}
             onChange={(e) => setStartDate(e.target.value)}
             className="mt-1 w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono"
           />
@@ -311,6 +326,15 @@ export default function SimulatePage() {
             <div>
               <p className="text-xs text-gray-500 mb-2">mu-TEVI index over the coverage window</p>
               <Sparkline points={result.mu_tevi_series} />
+              {result.extended_days ? (
+                <p className="text-xs text-gray-400 mt-2">
+                  {result.extended_days} of these {result.window_days} days fall after this
+                  state&rsquo;s calibration period (ends{" "}
+                  <span className="font-mono">{result.calibrated_through}</span>). Their index comes
+                  from live-fetched real NASA POWER weather run through the same already-fitted
+                  models, priced with the same committed contract -- nothing was refitted for them.
+                </p>
+              ) : null}
             </div>
           )}
 

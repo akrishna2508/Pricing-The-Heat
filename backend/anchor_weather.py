@@ -65,20 +65,29 @@ def fetch_anchor_weather_live(
     state_key: str,
     target_date,
     history_days: int = ANCHOR_HISTORY_DAYS,
+    bbox: dict | None = None,
 ) -> pd.DataFrame:
     """Real NASA POWER weather over state_key's anchor bbox, ending at
     target_date, with wbgt_c computed -- the same schema the static training
     parquet has, so callers can treat the two interchangeably.
 
+    `bbox` overrides the state's configured anchor bbox. Needed because one
+    state's committed training grid was fetched with a bbox that later config
+    edits moved (IN-Gujarat: 3 of its 15 trained nodes now sit outside
+    ctx.bbox), so a caller that must reproduce the TRAINED node set passes a
+    box derived from those nodes instead. Defaults to ctx.bbox, leaving the
+    heat-map path's behaviour unchanged.
+
     Raises SystemExit on a MODE A hard-stop (unreachable source); the caller
     is responsible for degrading honestly rather than serving stale data.
     """
     ctx = get_context(state_key)
+    bbox = bbox if bbox is not None else ctx.bbox
     target = pd.Timestamp(target_date)
     start = (target - timedelta(days=history_days)).strftime("%Y%m%d")
     end = target.strftime("%Y%m%d")
 
-    loader = WeatherLoader(bbox=ctx.bbox, cache_dir=ANCHOR_CACHE_DIR)
+    loader = WeatherLoader(bbox=bbox, cache_dir=ANCHOR_CACHE_DIR)
     # DEFAULT tile_deg on purpose -- see the module docstring's tiling note.
     raw = loader.fetch_daily(start=start, end=end)
     if raw.empty:
