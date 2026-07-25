@@ -17,6 +17,8 @@ export type StateListEntry = {
   country: string;
   currency: string;
   metro: string;
+  // This state's own committed contract window length (null if unpriced).
+  window_days?: number | null;
   mode: StateMode;
 };
 
@@ -70,6 +72,9 @@ export type SimulatePolicyRequest = {
   date_range: DateRange;
   lat?: number;
   lon?: number;
+  // Omit for the state's own committed contract window. Only the lengths the
+  // real historical sweep scored are accepted by the backend.
+  window_days?: number;
 };
 
 export type BasisRisk = {
@@ -122,6 +127,11 @@ export type SimulatePolicyResponse = {
   // live-fetched real weather. 0 => entirely within the calibrated series.
   extended_days: number | null;
   calibrated_through: string | null;
+  // True when the priced (strike, window) pairing came from this state's real
+  // historical sweep rather than being carried over from another length.
+  window_independently_evaluated?: boolean | null;
+  committed_window_days?: number | null;
+  committed_strike?: number | null;
   note: string;
 };
 

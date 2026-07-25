@@ -52,6 +52,7 @@ from backend.data.geo_states import GEOJSON_PATH, resolve_state
 from backend.state_context import all_state_keys, get_context, state_exists
 from backend.anchor_weather import fetch_anchor_weather_live
 from backend.mu_tevi_extend import extend_mu_tevi
+from backend.window_contracts import SELECTABLE_WINDOW_DAYS, contract_for_window
 from backend.state_heatmap import build_state_heatmap
 from models.pricing.lsmc_pricer import LSMCPricer
 
@@ -161,6 +162,10 @@ class StateListEntry(BaseModel):
     currency: str
     metro: str
     mode: str  # "configured" | "excluded" | "unpriced"
+    # This state's OWN committed contract window length, so the UI defaults to
+    # the state's real default instead of assuming one globally. None when the
+    # state has no priced contract.
+    window_days: int | None = None
 
 
 @app.get("/states", response_model=list[StateListEntry])
@@ -174,17 +179,36 @@ def list_states():
     out = []
     for key in all_state_keys():
         ctx = get_context(key)
+        window_days = None
         if ctx.artifact("excluded.json").exists():
             mode = "excluded"
         elif ctx.artifact("contract.json").exists():
             mode = "configured"
+            # contract.json is a few hundred bytes; reading it keeps this
+            # endpoint the single source of truth for each state's own default
+            # window without loading any model weights.
+            window_days = int(json.loads(ctx.artifact("contract.json").read_text())["window_days"])
         else:
             mode = "unpriced"
         out.append(StateListEntry(
             state_key=key, state=ctx.wage.get("state", key), country=ctx.country,
-            currency=ctx.currency, metro=ctx.metro, mode=mode,
+            currency=ctx.currency, metro=ctx.metro, mode=mode, window_days=window_days,
         ))
     return out
+
+
+@app.get("/window-options")
+def window_options():
+    """The coverage-window lengths a policy may actually be priced at.
+
+    Exactly the WINDOW_GRID the real historical contract sweep scored, so the
+    UI can never offer a length with no evaluated contract behind it.
+    """
+    return {
+        "selectable_window_days": list(SELECTABLE_WINDOW_DAYS),
+        "note": "Only these lengths were evaluated against real history. Each state's "
+                "contract for a given length is the one that length's own sweep selected.",
+    }
 
 
 # --- /resolve-location ----------------------------------------------------
@@ -262,6 +286,11 @@ class SimulatePolicyRequest(BaseModel):
     date_range: DateRange
     lat: float | None = None
     lon: float | None = None
+    # Coverage-window length. Omit for the state's own committed contract.
+    # Only the lengths the real historical sweep scored are accepted; each
+    # non-default length is priced with THAT length's own already-selected
+    # strike/frame (see backend/window_contracts.py).
+    window_days: int | None = None
 
 
 class BasisRiskBlock(BaseModel):
@@ -304,6 +333,12 @@ class SimulatePolicyResponse(BaseModel):
     # calibrated mu-TEVI series. 0 => entirely within the calibration period.
     extended_days: int | None = None
     calibrated_through: str | None = None
+    # True when the priced (strike, window) pairing came from this state's
+    # real historical design sweep rather than being carried over from a
+    # different window length.
+    window_independently_evaluated: bool | None = None
+    committed_window_days: int | None = None
+    committed_strike: float | None = None
     note: str
 
 
@@ -369,7 +404,34 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
             detail=f"unknown occupation '{req.occupation}'; have {sorted(wages)}",
         )
 
-    window_days = int(contract["window_days"])
+    # Window length is selectable among the lengths the real historical sweep
+    # actually scored. Omitting it reproduces the committed contract exactly.
+    # A non-default length uses THAT length's own already-evaluated best
+    # strike/frame, looked up from the state's persisted sweep table -- every
+    # state has at least one length whose best strike differs from its 14-day
+    # one, so carrying the 14-day strike over would misprice it. Nothing is
+    # refitted; see backend/window_contracts.py.
+    if req.window_days is None:
+        window_days = int(contract["window_days"])
+        strike = float(contract["strike"])
+        cap = float(contract["cap"])
+        frame = contract["frame"]
+        window_independently_evaluated = True
+        window_is_committed_default = True
+    else:
+        try:
+            selected = contract_for_window(state_key, int(req.window_days))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=503, detail=MODEL_NOT_TRAINED_DETAIL) from None
+        window_days = selected["window_days"]
+        strike = selected["strike"]
+        cap = selected["cap"]
+        frame = selected["frame"]
+        window_independently_evaluated = selected["independently_evaluated"]
+        window_is_committed_default = selected["is_committed_default"]
+
     if req.date_range.end < req.date_range.start:
         raise HTTPException(status_code=400, detail="date_range.end must be >= date_range.start")
 
@@ -414,7 +476,7 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
                    f"starting {req.date_range.start} for {state_key}; no data was fabricated to fill it",
         )
 
-    pricer = LSMCPricer.from_copula_json(path=copula_path, strike=contract["strike"], cap=contract["cap"])
+    pricer = LSMCPricer.from_copula_json(path=copula_path, strike=strike, cap=cap)
     wage_value = float(wages[req.occupation])
     window_values = window_df["mu_tevi"].to_numpy()
     result = pricer.price_window(window_values, req.occupation, wage=wage_value)
@@ -446,9 +508,12 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
         state=prov["state"],
         state_key=state_key,
         currency=ctx.currency,
-        frame=contract["frame"],
-        strike=contract["strike"],
+        frame=frame,
+        strike=strike,
         window_days=window_days,
+        window_independently_evaluated=window_independently_evaluated,
+        committed_window_days=int(contract["window_days"]),
+        committed_strike=float(contract["strike"]),
         occupation=req.occupation,
         premium_lsmc=result["premium_lsmc"],
         premium_wang=result["premium_wang"],
@@ -462,12 +527,19 @@ def simulate_policy(req: SimulatePolicyRequest, request: Request):
         extended_days=extended_days,
         calibrated_through=str(last_calibrated_ts.date()),
         note=(
-            f"Priced as {contract['frame'].replace('_', ' ')} -- this state's frame is "
+            f"Priced as {frame.replace('_', ' ')} -- this state's frame is "
             f"discovered from its own real climate regime, never assumed globally: a "
-            f"{window_days}-day coverage window at strike {contract['strike']:.2f} mu-TEVI, "
+            f"{window_days}-day coverage window at strike {strike:.2f} mu-TEVI, "
             f"starting {req.date_range.start}. basis_risk reports how often the index "
             f"under/over-pays the worker's own modeled loss -- inherent to any parametric "
             f"product, surfaced honestly rather than hidden."
+            + (
+                f" This {window_days}-day length is not this state's committed default "
+                f"({contract['window_days']} days at strike {float(contract['strike']):.2f}); "
+                f"its strike and frame are the ones this length's own real historical sweep "
+                f"already selected, looked up rather than refitted."
+                if not window_is_committed_default else ""
+            )
             + (
                 f" {extended_days} of these {window_days} days fall after this state's "
                 f"calibration period (which ends {last_calibrated_ts.date()}): their mu-TEVI "

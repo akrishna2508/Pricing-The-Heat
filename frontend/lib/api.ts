@@ -71,6 +71,13 @@ export function getStates(): Promise<StateListEntry[]> {
   return request<StateListEntry[]>("/states");
 }
 
+// The coverage-window lengths a policy may actually be priced at -- exactly
+// the grid the real historical contract sweep scored, read from the backend
+// rather than duplicated here.
+export function getWindowOptions(): Promise<{ selectable_window_days: number[]; note: string }> {
+  return request<{ selectable_window_days: number[]; note: string }>("/window-options");
+}
+
 export function resolveLocation(body: ResolveLocationRequest): Promise<ResolveLocationResponse> {
   return request<ResolveLocationResponse>("/resolve-location", {
     method: "POST",

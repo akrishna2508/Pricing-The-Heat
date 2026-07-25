@@ -5,6 +5,7 @@ import {
   ApiError,
   explainPolicy,
   getStates,
+  getWindowOptions,
   resolveLocation,
   simulatePolicy,
 } from "@/lib/api";
@@ -19,11 +20,11 @@ import { PayoutChart } from "@/components/PayoutChart";
 import { Sparkline } from "@/components/Sparkline";
 
 const OCCUPATIONS = ["vendor", "construction", "delivery"];
-// UX-only default: every state's real contract.json currently selects a
-// 14-day window (see docs/STATEWISE_RESULTS.md); this only drives the date
-// picker's auto-computed window end, never what actually gets priced --
-// the backend is the single source of truth for the real per-state window.
-const WINDOW_DAYS_UX_DEFAULT = 14;
+// Fallback ONLY for the moment before /window-options and /states have
+// answered. The real selectable lengths come from the backend (the exact
+// WINDOW_GRID the historical contract sweep scored) and each state's default
+// comes from its own contract.json, so neither is assumed here.
+const WINDOW_DAYS_FALLBACK = 14;
 
 // NASA POWER's real daily processing lag, mirroring
 // backend/data/weather.py's NASA_POWER_LAG_DAYS. Pricing past the
@@ -38,11 +39,11 @@ function addDays(iso: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-// Latest window START whose full 14-day window still ends on a day NASA
-// POWER has real data for.
-function latestWindowStart(): string {
+// Latest window START whose full `windowDays`-day window still ends on a day
+// NASA POWER has real data for. A longer window necessarily starts earlier.
+function latestWindowStart(windowDays: number): string {
   const d = new Date();
-  d.setUTCDate(d.getUTCDate() - NASA_POWER_LAG_DAYS - (WINDOW_DAYS_UX_DEFAULT - 1));
+  d.setUTCDate(d.getUTCDate() - NASA_POWER_LAG_DAYS - (windowDays - 1));
   return d.toISOString().slice(0, 10);
 }
 
@@ -82,7 +83,14 @@ export default function SimulatePage() {
   const [manualStateKey, setManualStateKey] = useState<string>("");
 
   const [occupation, setOccupation] = useState("vendor");
-  const [startDate, setStartDate] = useState("2019-06-01");
+  const [windowOptions, setWindowOptions] = useState<number[]>([WINDOW_DAYS_FALLBACK]);
+  const [windowDays, setWindowDays] = useState<number>(WINDOW_DAYS_FALLBACK);
+  // Defaults to the latest date a full window can actually be priced for, so
+  // the page lands on real current data with no interaction. Recomputed
+  // whenever the window length changes (see the effect below).
+  const [startDate, setStartDate] = useState(() => latestWindowStart(WINDOW_DAYS_FALLBACK));
+  // Once the user picks a date themselves, stop auto-following the selector.
+  const [dateTouched, setDateTouched] = useState(false);
   const [result, setResult] = useState<SimulatePolicyResponse | null>(null);
   const [explainResult, setExplainResult] = useState<ExplainResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -101,13 +109,47 @@ export default function SimulatePage() {
       .catch((err: unknown) => {
         setStatesError(err instanceof ApiError ? err.message : "Failed to load the state list.");
       });
+    // The real evaluated lengths; on failure the selector stays on the single
+    // fallback rather than offering a length with no contract behind it.
+    getWindowOptions()
+      .then((opts) => {
+        if (opts.selectable_window_days?.length) setWindowOptions(opts.selectable_window_days);
+      })
+      .catch(() => undefined);
   }, []);
 
   const grouped = useMemo(
     () => (states ? groupByCountry(states) : new Map<string, StateListEntry[]>()),
     [states],
   );
-  const endDate = addDays(startDate, WINDOW_DAYS_UX_DEFAULT - 1);
+
+  // The selected state's OWN committed window length -- states may differ, so
+  // this is read from config rather than assumed.
+  const selectedStateDefaultWindow = useMemo(
+    () => states?.find((s) => s.state_key === manualStateKey)?.window_days ?? null,
+    [states, manualStateKey],
+  );
+
+  // Adopt the state's own default window whenever the state changes, unless
+  // the user has already chosen a length explicitly.
+  const [windowTouched, setWindowTouched] = useState(false);
+  useEffect(() => {
+    if (!windowTouched && selectedStateDefaultWindow) setWindowDays(selectedStateDefaultWindow);
+  }, [selectedStateDefaultWindow, windowTouched]);
+
+  const maxStart = latestWindowStart(windowDays);
+
+  // Keep the start date valid for the CURRENT window length: follow the latest
+  // priceable start until the user picks a date, then only clamp if their
+  // choice would now run past the end of real data.
+  useEffect(() => {
+    setStartDate((prev) => {
+      if (!dateTouched) return maxStart;
+      return prev > maxStart ? maxStart : prev;
+    });
+  }, [maxStart, dateTouched]);
+
+  const endDate = addDays(startDate, windowDays - 1);
 
   async function priceStateKey(stateKey: string) {
     setLoading(true);
@@ -116,10 +158,14 @@ export default function SimulatePage() {
     setExplainResult(null);
     setExplainError(null);
     try {
+      // window_days is sent only when it differs from this state's own
+      // committed default, so the default request stays exactly as before.
+      const stateDefault = states?.find((s) => s.state_key === stateKey)?.window_days ?? null;
       const resp = await simulatePolicy({
         state_key: stateKey,
         occupation,
         date_range: { start: startDate, end: endDate },
+        ...(stateDefault && windowDays === stateDefault ? {} : { window_days: windowDays }),
       });
       setResult(resp);
     } catch (err) {
@@ -208,13 +254,34 @@ export default function SimulatePage() {
         </label>
 
         <label className="block text-sm text-gray-700">
-          Coverage window start ({WINDOW_DAYS_UX_DEFAULT} days, ending {endDate})
+          Coverage window length
+          <select
+            value={windowDays}
+            onChange={(e) => {
+              setWindowTouched(true);
+              setWindowDays(Number(e.target.value));
+            }}
+            className="mt-1 w-full border border-gray-300 rounded px-3 py-2 text-sm"
+          >
+            {windowOptions.map((w) => (
+              <option key={w} value={w}>
+                {w} days{selectedStateDefaultWindow === w ? " (this state's contract)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block text-sm text-gray-700">
+          Coverage window start ({windowDays} days, ending {endDate})
           <input
             type="date"
             value={startDate}
             min="2014-01-01"
-            max={latestWindowStart()}
-            onChange={(e) => setStartDate(e.target.value)}
+            max={maxStart}
+            onChange={(e) => {
+              setDateTouched(true);
+              setStartDate(e.target.value);
+            }}
             className="mt-1 w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono"
           />
         </label>
@@ -326,6 +393,16 @@ export default function SimulatePage() {
             <div>
               <p className="text-xs text-gray-500 mb-2">mu-TEVI index over the coverage window</p>
               <Sparkline points={result.mu_tevi_series} />
+              {result.committed_window_days != null &&
+              result.window_days !== result.committed_window_days ? (
+                <p className="text-xs text-gray-400 mt-2">
+                  Priced at strike <span className="font-mono">{result.strike}</span> over{" "}
+                  {result.window_days} days -- this length&rsquo;s own contract from the state&rsquo;s
+                  real historical sweep, not its committed {result.committed_window_days}-day default
+                  (strike <span className="font-mono">{result.committed_strike}</span>). Looked up,
+                  not refitted.
+                </p>
+              ) : null}
               {result.extended_days ? (
                 <p className="text-xs text-gray-400 mt-2">
                   {result.extended_days} of these {result.window_days} days fall after this
