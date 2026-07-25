@@ -50,6 +50,7 @@ from slowapi.util import get_remote_address
 
 from backend.data.geo_states import GEOJSON_PATH, resolve_state
 from backend.state_context import all_state_keys, get_context, state_exists
+from backend.anchor_weather import fetch_anchor_weather_live
 from backend.state_heatmap import build_state_heatmap
 from models.pricing.lsmc_pricer import LSMCPricer
 
@@ -564,21 +565,70 @@ def heatmap(state_key: str, date: str | None = None, coverage: str = "anchor"):
     from models.stgcn.train import to_node_time_matrix
 
     weather = pd.read_parquet(weather_path)
-    arr, node_ids_current, _coords = to_node_time_matrix(weather)
     dates_sorted = sorted(weather["date"].unique())
 
+    # Dates INSIDE the static training window are served from it unchanged --
+    # no network, no added latency, byte-identical to before. A date outside
+    # it (since v2.8 the picker defaults to today minus NASA POWER's real lag,
+    # which every training window predates) is fetched LIVE over the same
+    # anchor bbox and run through the same trained weights. The training
+    # parquet itself is never modified or extended -- see
+    # backend/anchor_weather.py's scope boundary.
+    anchor_live_fetched = False
     if date is None:
         target = dates_sorted[-1]
     else:
         target = pd.Timestamp(date)
         if target not in dates_sorted:
-            raise HTTPException(
-                status_code=404,
-                detail=f"date {date} is not covered by {state_key}'s real weather data on disk",
-            )
+            try:
+                weather = fetch_anchor_weather_live(state_key, target)
+            except SystemExit:
+                # MODE A hard-stop inside the real fetch (fatal_abort ->
+                # sys.exit) must not kill the API worker, and must never be
+                # papered over with stale training data.
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"real weather for {date} could not be fetched from NASA POWER "
+                           f"(source unreachable); no substitute data is served",
+                ) from None
+            anchor_live_fetched = True
+            if weather.empty:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"NASA POWER has no real observations for {date} yet "
+                           f"(it publishes with a few days' lag); no data is invented to fill it",
+                )
+            dates_sorted = sorted(weather["date"].unique())
+            if target not in dates_sorted:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"date {date} is not covered by {state_key}'s real weather data",
+                )
 
     node_order = ckpt["graph"]["node_ids"]
+    try:
+        # to_node_time_matrix hard-stops (sys.exit) if a real gap survived
+        # MODE B rather than fabricating a fill -- honest, but it must not
+        # take the worker down on the live path.
+        arr, node_ids_current, _coords = to_node_time_matrix(weather)
+    except SystemExit:
+        raise HTTPException(
+            status_code=503,
+            detail=f"real weather for {date} has gaps NASA POWER could not fill with "
+                   f"observed values; no fabricated fill is served",
+        ) from None
     col_index = {nid: i for i, nid in enumerate(node_ids_current)}
+    # The live grid can be a strict SUPERSET of the trained node set (v2.9 tile
+    # padding), so selecting the checkpoint's own order both drops the extras
+    # and keeps the Chebyshev basis aligned. A trained node genuinely absent
+    # from the real response is a coverage failure, reported, never guessed.
+    if not set(node_order).issubset(col_index):
+        raise HTTPException(
+            status_code=503,
+            detail=f"real weather for {date} is missing "
+                   f"{len(set(node_order) - set(col_index))} of {state_key}'s "
+                   f"{len(node_order)} trained grid nodes; no interpolated fill is served",
+        )
     reorder = [col_index[nid] for nid in node_order]
     arr = arr[:, reorder]
 
@@ -639,6 +689,10 @@ def heatmap(state_key: str, date: str | None = None, coverage: str = "anchor"):
             # fallback -- flagged so the UI says so, never silently extrapolated.
             "coverage": "anchor",
             "whole_state_available": not state_fetch_attempted,
+            # True when this date fell outside the static TRAINING window and
+            # its weather was fetched live from NASA POWER for display (the
+            # training parquet is unchanged either way).
+            "anchor_live_fetched": anchor_live_fetched,
             "note": "heat_index is the per-node STGCN street-level heat forecast (shade-WBGT, "
                     "degC), one real value per grid cell -- it VARIES by node. mu_tevi is this "
                     "state's single state-level fused index for this date and is intentionally "

@@ -196,6 +196,16 @@ class WeatherLoader:
                 df = df.drop_duplicates(subset=["node_id", "date"])
             param_frames[parameter] = df
 
+        # NASA POWER answers 200 with ZERO features for a window it has no data
+        # for at all (e.g. entirely in the future) -- distinct from a MODE B
+        # -999 cell inside a window it does cover. Report that as an empty
+        # frame; the caller decides how to degrade honestly. (Left unguarded
+        # this raised a bare KeyError on the merge below -- unreachable from the
+        # training path, which only ever fetches real past windows, but
+        # reachable from the display path's live fetch.)
+        if any(frame.empty for frame in param_frames.values()):
+            return pd.DataFrame(columns=["node_id", "lat", "lon", "date", *PARAMETERS])
+
         merged = param_frames[PARAMETERS[0]]
         for parameter in PARAMETERS[1:]:
             merged = merged.merge(
